@@ -1,2 +1,2 @@
 # Disk-Cache-Attacks
-This repository contains several POCs, demonstrating exploitation of the disk cache of operating systems.
+This repository contains several POCs, demonstrating the exploitation of the disk cache in Linux and Windows.
