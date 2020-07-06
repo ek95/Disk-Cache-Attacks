@@ -59,7 +59,7 @@ As an simple example, which also works on patched kernels, follow these instruct
 2. Build the POC as described above.
 3. Create a test file, for example by using `dd if=/dev/urandom of=./test.so bs=4k count=32`.
 4. Launch the POC on page 1 of test.so `./ev_chk <path to test.so> 1` and wait until the POC is initialised ([OK] Ready).
-5. Launch the access tool configured with a period of 1000ms and 10 accesses on the target page `./access <path to test.so> 1 1000 10`  
+5. Launch the access tool on the target page `./access <path to test.so> 1 1000 10` (1000ms period, 10 accesses in total). 
 Now you should see the page accesses appearing in the output of the POC. On a system featuring a AMD Ryzen 5 2600X CPU, 16GB of Corsair DDR4 3000MHz RAM, a Samsung 970 EVO SSD and Linux 5.3.0-51 this leads to eviction times around 100ms. 
 
 ### Tweaking
