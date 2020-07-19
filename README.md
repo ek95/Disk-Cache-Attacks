@@ -18,7 +18,10 @@ Most of the POCs have been designed and tested under the precondition that **swa
  
 ## Note on Countermeasures
 ### Linux
-Recent kernel versions include a countermeasure against the attack which only reveals valid information if the process has write access to the targeted file (see also [Patch](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=134fca9063ad4851de767d1768180e5dede9a881)). Therefore to confirm the POCs function you have to use a unpatched kernel version. If you are only interested in the performance of the attack you might also just use files you have write access to or run the POC as root.
+<!---
+    git tag --contains 134fca9063ad4851de767d1768180e5dede9a881
+-->
+Recent kernel versions (>= 5.2) include a countermeasure against the attack which only reveals valid information if the process has write access to the targeted file (see also [Patch](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=134fca9063ad4851de767d1768180e5dede9a881)). Therefore to confirm the POCs function you have to use a unpatched kernel version. If you are only interested in the performance of the attack you might also just use files you have write access to or run the POC as root.
  
 # POCs
 ## Linux Side-Channel Attack (linux/evict_and_check)
