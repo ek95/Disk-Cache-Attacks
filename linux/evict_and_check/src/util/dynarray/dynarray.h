@@ -18,11 +18,12 @@ typedef void (*DynArrayDataCallbackFn)(void *addr);
 void *dynArrayInit(DynArray *array, size_t elem_size, size_t init_cap);
 void *dynArrayReserve(DynArray *array, size_t new_cap);
 void *dynArrayResize(DynArray *array, size_t new_size);
-void *dynArrayAppend(DynArray *array, void *data);
-void *dynArraySet(DynArray *array, size_t index, void *data);
-void dynArrayPop(DynArray *array, DynArrayDataCallbackArgFn callback, void *arg);
-void dynArrayDestroy(DynArray *array, DynArrayDataCallbackFn free_data);
 void *dynArrayGet(DynArray *array, size_t index);
+void *dynArraySet(DynArray *array, size_t index, void *data);
+void *dynArrayAppend(DynArray *array, void *data);
+void dynArrayPop(DynArray *array, DynArrayDataCallbackArgFn callback, void *arg);
 void dynArrayReset(DynArray *array);
+void dynArrayDestroy(DynArray *array, DynArrayDataCallbackFn free_data);
+
 
 #endif

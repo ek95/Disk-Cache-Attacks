@@ -62,27 +62,14 @@ void *dynArrayResize(DynArray *array, size_t new_size)
 }
 
 
-void *dynArrayAppend(DynArray *array, void *data)
+void *dynArrayGet(DynArray *array, size_t index)
 {
-    void *tmp;
-    void *dest;
-
-    if(array->size_ == array->cap_)
+    if(index >= array->size_)
     {
-        tmp = realloc(array->data_, array->cap_ * array->elem_size_ * 2);
-        if(tmp == NULL)
-        {
-            return NULL;
-        }
-        array->data_ = tmp;
-        array->cap_ *= 2;
+        return NULL;
     }
 
-    dest = (uint8_t *) array->data_ + array->size_ * array->elem_size_;
-    memcpy(dest, data, array->elem_size_);
-    array->size_++;
-    
-    return dest;
+    return (uint8_t *) array->data_ + index * array->elem_size_;
 }
 
 
@@ -102,6 +89,30 @@ void *dynArraySet(DynArray *array, size_t index, void *data)
 }
 
 
+void *dynArrayAppend(DynArray *array, void *data)
+{
+    void *tmp;
+    void *dest;
+
+    if(array->size_ == array->cap_)
+    {
+        tmp = realloc(array->data_, (array->cap_ + 1) * array->elem_size_ * 2);
+        if(tmp == NULL)
+        {
+            return NULL;
+        }
+        array->data_ = tmp;
+        array->cap_ = (array->cap_ + 1) * 2;
+    }
+
+    dest = (uint8_t *) array->data_ + array->size_ * array->elem_size_;
+    memcpy(dest, data, array->elem_size_);
+    array->size_++;
+    
+    return dest;
+}
+
+
 void dynArrayPop(DynArray *array, DynArrayDataCallbackArgFn callback, void *arg)
 {
     if(array->size_ > 0 )
@@ -113,6 +124,12 @@ void dynArrayPop(DynArray *array, DynArrayDataCallbackArgFn callback, void *arg)
         
         array->size_--;
     }
+}
+
+
+void dynArrayReset(DynArray *array)
+{
+    array->size_ = 0;
 }
 
 
@@ -134,21 +151,4 @@ void dynArrayDestroy(DynArray *array, DynArrayDataCallbackFn free_data)
     
     array->size_ = 0;
     array->cap_ = 0;
-}
-
-
-void *dynArrayGet(DynArray *array, size_t index)
-{
-    if(index >= array->size_)
-    {
-        return NULL;
-    }
-
-    return (uint8_t *) array->data_ + index * array->elem_size_;
-}
-
-
-void dynArrayReset(DynArray *array)
-{
-    array->size_ = 0;
 }

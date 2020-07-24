@@ -8,16 +8,22 @@
 static int error = 0;
 static int test_numbers[] = {1, 6, 3, 4, 10};
 static int test_numbers2[] = {1, 6, 5, 7, 8};
+static int test_numbers3[] = {2, 6, 4, 7, 5};
 
 
-void prepareDynArray(DynArray *array, int *values, size_t values_count)
+int prepareDynArray(DynArray *array, int *values, size_t values_count)
 {
    assert(dynArrayInit(array, sizeof(int), ARRAY_INIT_CAP) != NULL);
     
    for(size_t i = 0; i < values_count; i++) 
    {
-       assert(dynArrayAppend(array, &values[i]) != NULL);
+       if(dynArrayAppend(array, &values[i]) == NULL) 
+       {
+           return -1;
+       }
    }
+   
+   return 0;
 }
 
 int checkDynArray(DynArray *array, int *values, size_t values_count)
@@ -38,7 +44,7 @@ int checkDynArray(DynArray *array, int *values, size_t values_count)
     return 0;
 }
 
-void pop_cb(void *data, void *arg)
+void popCB(void *data, void *arg)
 {
     if(*((int *) data) != (ssize_t) arg)
     {
@@ -46,11 +52,11 @@ void pop_cb(void *data, void *arg)
     }
 }
 
-void destroy_cb(void *data)
+void destroyTestNumbers3CB(void *data)
 {
     static size_t i = 0;
     
-    if(*((int *) data) != test_numbers2[i])
+    if(*((int *) data) != test_numbers3[i])
     {
         error = 1;
     }
@@ -63,17 +69,18 @@ int main(int argc, char *argv[])
 {
     DynArray numbers_array;
     int *raw_numbers_array = NULL;
+    int number = 0;
     
     
     // first test
-    prepareDynArray(&numbers_array, test_numbers, sizeof(test_numbers) / sizeof(int));
+    assert(prepareDynArray(&numbers_array, test_numbers, sizeof(test_numbers) / sizeof(int)) == 0);
     assert(checkDynArray(&numbers_array, test_numbers, sizeof(test_numbers) / sizeof(int)) == 0);
     dynArrayDestroy(&numbers_array, NULL);
     
     
     // second test
     assert(dynArrayInit(&numbers_array, sizeof(int), 0) == NULL);
-    assert(dynArrayReserve(&numbers_array, sizeof(test_numbers2) / sizeof(int)) != NULL);
+    assert(dynArrayResize(&numbers_array, sizeof(test_numbers2) / sizeof(int)) != NULL);
     raw_numbers_array = numbers_array.data_;
     for(size_t i = 0; i < sizeof(test_numbers2) / sizeof(int); i++)
     {
@@ -82,7 +89,7 @@ int main(int argc, char *argv[])
     
     for(ssize_t i =  sizeof(test_numbers2) / sizeof(int) - 1; i >= 0; i--)
     {
-        dynArrayPop(&numbers_array, pop_cb, (void *) (ssize_t) test_numbers2[i]);
+        dynArrayPop(&numbers_array, popCB, (void *) (ssize_t) test_numbers2[i]);
         assert(error == 0);
     }
 
@@ -92,16 +99,27 @@ int main(int argc, char *argv[])
     raw_numbers_array = numbers_array.data_;
     for(size_t i = 0; i < sizeof(test_numbers2) / sizeof(int); i++)
     {
-        dynArrayAppend(&numbers_array, &test_numbers2[i]);
+        assert(dynArrayAppend(&numbers_array, &test_numbers2[i]) != NULL);
     }
     
-    for(ssize_t i =  sizeof(test_numbers2) / sizeof(int) - 1; i >= 0; i--)
+    number = 2;
+    assert(dynArraySet(&numbers_array, 0, &number) != NULL);
+    number = 4;
+    assert(dynArraySet(&numbers_array, 2, &number) != NULL);
+    number = 5;
+    assert(dynArraySet(&numbers_array, 4, &number) != NULL);
+
+    for(ssize_t i =  sizeof(test_numbers3) / sizeof(int) - 1; i >= 0; i--)
     {
-        dynArrayPop(&numbers_array, pop_cb, (void *) (ssize_t) test_numbers2[i]);
+        dynArrayPop(&numbers_array, popCB, (void *) (ssize_t) test_numbers3[i]);
         assert(error == 0);
     }
+    dynArrayDestroy(&numbers_array, NULL);
 
-    dynArrayDestroy(&numbers_array, destroy_cb);
+
+    // fourth test
+    assert(prepareDynArray(&numbers_array, test_numbers3, sizeof(test_numbers3) / sizeof(int)) == 0);
+    dynArrayDestroy(&numbers_array, destroyTestNumbers3CB);
     assert(error == 0);
 
     return 0;

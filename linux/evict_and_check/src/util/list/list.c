@@ -12,6 +12,21 @@ void listInit(List *list, size_t elem_size)
 }
 
 
+ListNode *listGetIndex(List *list, size_t index)
+{
+    ListNode *node = list->head_;
+    size_t current_index = 0;
+
+    while(node != NULL && current_index < index)
+    {
+        node = node->next_;
+        current_index++;
+    }
+
+    return node;
+}
+
+
 void listForEach(List *list, ListDataCallbackArgFn callback, void *arg)
 {
     ListNode *node = list->head_;
@@ -61,28 +76,6 @@ ListNode *listSearchLast(List *list, void *data, ListCmpFn cmp)
 }
 
 
-ListNode *listAppendNodeBack(List *list, ListNode *node) 
-{
-    // list is empty
-    if(list->head_ == NULL)
-    {
-        list->head_ = node;
-        list->tail_ = node;
-    }
-    else 
-    {
-        // next
-        list->tail_->next_ = node;
-        // prev
-        node->prev_ = list->tail_;
-        list->tail_ = node;
-    }
-    
-    list->count_++;
-    return node;
-}
-
-
 ListNode *listAppendNodeFront(List *list, ListNode *node)
 {
     // list is empty
@@ -105,31 +98,24 @@ ListNode *listAppendNodeFront(List *list, ListNode *node)
 }
 
 
-ListNode *listPopNode(List *list, ListNode *node) 
-{    
-    // node is head
-    if(node->prev_ == NULL)
+ListNode *listAppendNodeBack(List *list, ListNode *node) 
+{
+    // list is empty
+    if(list->head_ == NULL)
     {
-        // next node becomes head
-        list->head_ = node->next_;
+        list->head_ = node;
+        list->tail_ = node;
     }
-    // node is tail 
-    else if(node->next_ == NULL) 
+    else 
     {
-        // previous node becomes tail
-        list->tail_ = node->prev_;
-    }
-    // node is between two nodes
-    else
-    {        
-        node->next_->prev_ = node->prev_;
-        node->prev_->next_ = node->next_;
+        // next
+        list->tail_->next_ = node;
+        // prev
+        node->prev_ = list->tail_;
+        list->tail_ = node;
     }
     
-    // clear node links
-    node->next_ = NULL;
-    node->prev_ = NULL;
-    
+    list->count_++;
     return node;
 }
 
@@ -178,17 +164,49 @@ ListNode *listAppendBack(List *list, void *data)
 }
 
 
-ListNode *listGetIndex(List *list, size_t index)
-{
-    ListNode *node = list->head_;
-    size_t current_index = 0;
-
-    while(node != NULL && current_index < index)
+ListNode *listPopNode(List *list, ListNode *node) 
+{    
+    // only one node in list
+    if(node->prev_ == NULL && node->next_ == NULL) 
     {
-        node = node->next_;
-        current_index++;
+        list->head_ = NULL;
+        list->tail_ = NULL;
     }
+    // node is head
+    else if(node->prev_ == NULL)
+    {
+        // next node becomes head
+        list->head_ = node->next_;
+    }
+    // node is tail 
+    else if(node->next_ == NULL) 
+    {
+        // previous node becomes tail
+        list->tail_ = node->prev_;
+    }
+    // node is between two nodes
+    else
+    {        
+        node->next_->prev_ = node->prev_;
+        node->prev_->next_ = node->next_;
+    }
+    
+    // reduce list count
+    list->count_--;
+    
+    // clear node links
+    node->next_ = NULL;
+    node->prev_ = NULL;
+    
+    
+    return node;
+}
 
+
+ListNode *listMoveNode(List *src_list, ListNode *node, List *dst_list)
+{
+    listPopNode(src_list, node);
+    listAppendNodeBack(dst_list, node);
     return node;
 }
 
@@ -220,14 +238,6 @@ List *listChain(List *list1, List *list2)
     list2->count_ = 0;
     
     return list1;
-}
-
-
-ListNode *listMoveNode(List *src_list, ListNode *node, List *dst_list)
-{
-    listPopNode(src_list, node);
-    listAppendNodeBack(dst_list, node);
-    return node;
 }
 
 
