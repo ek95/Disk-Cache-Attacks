@@ -17,9 +17,10 @@ if sys.version_info < MIN_PYTHON:
 #-------------------------------------------------------------------------------
 # GLOBALS
 #-------------------------------------------------------------------------------
+
 CONFIG_TEMPLATE_REL_PATH = "./src/config_template.h"
 CONFIG_OUT_REL_PATH = "./src/config.h"
-GRID_SAMPLE_RUNS = 500
+GRID_SAMPLE_RUNS = 2
 EV_CHK_BINARY_REL_FOLDER = "./build/bin"
 EV_CHK_BINARY = "ev_chk"
 TARGET_FILE_REL_PATH = "./build/bin/test.so"
@@ -28,7 +29,8 @@ ACCESS_BINARY_REL_PATH = "../tools/access/bin/access"
 ACCESS_COUNT = 25
 ACCESS_PERIOD_MS = 1000
 LOG_REL_FOLDER = "./logs"
-LOG_NAME = "results.csv"
+LOG_NAME = "parameters.csv"
+IOSTAT_RESULT_LOG_NAME_TEMPLATE = "iostat_{}.log"
 
 
 #-------------------------------------------------------------------------------
@@ -220,13 +222,12 @@ log_f = open(LOG_REL_FOLDER + "/" + LOG_NAME, "w+")
 log_f.write(";".join(grid_search_conf.keys()) + "; Eviction Time [ns]\n")
 
 for r in range(GRID_SAMPLE_RUNS):
-    print("Run " + str(r))
+    print("\nRun " + str(r))
 
     # sample values
     values = randomGridSample(grid_search_conf)
     # write new config
     writeConfig(grid_search_conf, values, config_template)
-    sys.exit()
     # instantiate build
     subprocess.run("./build.sh", check=True)
 
@@ -236,7 +237,8 @@ for r in range(GRID_SAMPLE_RUNS):
                                  str(TARGET_PAGE)],
                                 stdout=subprocess.PIPE,
                                 universal_newlines=True,
-                                bufsize=1, cwd=EV_CHK_BINARY_REL_FOLDER)
+                                bufsize=1,
+                                cwd=EV_CHK_BINARY_REL_FOLDER)
 
     # start stdout pipe listener thread
     ev_chk_pipe_worker_args = {
@@ -249,23 +251,48 @@ for r in range(GRID_SAMPLE_RUNS):
 
     # wait until attack process is ready
     ev_chk_pipe_worker_args["ready_sem"].acquire()
+    # check if attack binary ended prematurly (error)
+    ev_chk_p.poll()
+    if ev_chk_p.returncode is not None and ev_chk_p.returncode != 0:
+        raise Exception("Error at executing attack!")
+
+    # run iostat (not blocking)
+    # assumes pipe buffer is big enough to receive output from iostat
+    # (should be the case, for linux 16 pages by default)
+    iostat_p = subprocess.Popen(["iostat", "-x", "-y", "-z",
+                                 str(math.floor(ACCESS_COUNT * ACCESS_PERIOD_MS / 1000)),
+                                 "1"],
+                                stdout=subprocess.PIPE,
+                                universal_newlines=True,
+                                bufsize=1,)
 
     # start access binary (blocking)
     access_p = subprocess.run([ACCESS_BINARY_REL_PATH,
                                TARGET_FILE_REL_PATH,
                                str(TARGET_PAGE),
                                str(ACCESS_PERIOD_MS),
-                               str(ACCESS_COUNT)], check=True)
+                               str(ACCESS_COUNT)],
+                              check=True)
 
     # signal attack process to end
     ev_chk_p.send_signal(signal.SIGINT)
     # join ev_chk worker
     ev_chk_pipe_worker_t.join()
-    # wait till process is closed
+    # wait till attack process is closed
     ev_chk_p.wait()
     if ev_chk_p.returncode != 0:
         raise Exception("Error at executing attack!")
+    # wait till iostat process is closed
+    iostat_p.wait()
 
-    # save results
+    # save grid evaluation results
     log_f.write(";".join([str(v) for v in values.values()]) + ";" +
                 str(ev_chk_pipe_worker_args["eviction_time_ns"]) + "\n")
+
+    # save iostat results
+    iostat_f = open(LOG_REL_FOLDER + "/" +
+                    IOSTAT_RESULT_LOG_NAME_TEMPLATE.format(r + 2), "w+")
+    iostat_f.write(iostat_p.stdout.read())
+    iostat_f.close()
+
+log_f.close()
