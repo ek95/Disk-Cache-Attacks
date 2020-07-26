@@ -19,7 +19,7 @@ typedef struct _List_
     size_t elem_size_;
 } List;
 
-typedef int (*ListCmpFn)(void *node, void *data);
+typedef int (*ListCmpFn)(void *data, void *cmp_data);
 typedef void (*ListDataCallbackArgFn)(void *data, void *arg);
 typedef void (*ListDataCallbackFn)(void *data);
 

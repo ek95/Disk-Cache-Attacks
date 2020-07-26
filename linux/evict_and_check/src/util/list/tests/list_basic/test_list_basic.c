@@ -4,25 +4,32 @@
 #include <assert.h>
 #include "util/list/list.h"
 
-#define RANDOM_TEST_NODE_COUNT 10000
-#define RANDOM_TEST_NODE_MAX_VALUE 100000
 
-int error = 0;
-int test_numbers[] = {1, 6, 3, 4, 10};
-int test_numbers2[] = {1, 6, 3, 4, 10, 11};
-int test_numbers3[] = {1, 6, 2, 3, 4, 10};
-int test_numbers4[] = {1, 6};
-int test_numbers5[] = {3, 6, 5, 7, 2 , 6};
+#define TEST_START(x) printf("Running %d. test...\n", (x))
+#define TEST_END(x) printf("%d. test completed successfully.\n", (x))
 
 
-void prepareList(List *list, int *values, size_t values_count)
+static int error = 0;
+static int test_numbers[] = {1, 6, 3, 4, 10};
+static int test_numbers2[] = {-1, 0, 11, 12};
+static int test_numbers3[] = {1, 7, 6, 2, 3, 0, 4, 7, 10, 1};
+static int test_numbers4[] = {2, 1, 7, 6, 1};
+static int test_numbers5[] = {3, 0, 4, 7, 10};
+
+
+int prepareList(List *list, int *values, size_t values_count)
 {
    listInit(list, sizeof(int)); 
     
    for(size_t i = 0; i < values_count; i++) 
    {
-       assert(listAppendBack(list, &values[i]) != NULL);
+       if(listAppendBack(list, &values[i]) == NULL) 
+       {
+           return -1;
+       }
    }
+   
+   return 0;
 }
 
 int checkList(List *list, int *values, size_t values_count)
@@ -32,20 +39,19 @@ int checkList(List *list, int *values, size_t values_count)
     
     while(node != NULL)
     {
-        int *current_value = (int *) node->data_;
-        
         if(i == values_count) 
         {
-            break;
+            return -1;
         }
         
+        int *current_value = (int *) node->data_;
         if(*current_value != values[i])
         {
             return -1;
         }
         
-        i++;
         node = node->next_;
+        i++;
     }
     
     if(node != NULL || i != values_count)
@@ -56,9 +62,9 @@ int checkList(List *list, int *values, size_t values_count)
     return 0;
 }
 
-int list_cmp1(void *node, void *value)
+int listCmpEqual(void *data, void *cmp_data)
 {
-    if(*((int *) node) == *((int *) value)) 
+    if(*((int *) data) == *((int *) cmp_data)) 
     {
         return 1;
     } 
@@ -66,9 +72,9 @@ int list_cmp1(void *node, void *value)
     return 0;
 }
 
-int list_cmp2(void* node, void* value)
+int listCmpLessEqual(void* data, void* cmp_data)
 {
-    if(*((int *)value) > *((int *)node))
+    if(*((int *) data) <= *((int *) cmp_data))
     {
         return 1;
     }
@@ -76,7 +82,7 @@ int list_cmp2(void* node, void* value)
     return 0;
 }
 
-void for_each_cb(void *data, void *arg) 
+void listForEachCB(void *data, void *arg) 
 {
     static size_t i = 0;
     
@@ -88,11 +94,11 @@ void for_each_cb(void *data, void *arg)
     i++;
 }
 
-void free_data_cb(void *data) 
+void listFreeDataCBTestNumbers3(void *data) 
 {
     static size_t i = 0;
     
-    if(*((int *) data) != test_numbers5[i])
+    if(*((int *) data) != test_numbers3[i])
     {
         error = 1;
     }
@@ -104,40 +110,141 @@ void free_data_cb(void *data)
 int main(int argc, char *argv[]) 
 {
     List numbers_list;
+    List numbers_list2;
+    List numbers_list3;
+    ListNode *found_node;
     int number;
     
-    srand(time(NULL));
     
     // first test
-    prepareList(&numbers_list, test_numbers, sizeof(test_numbers) / sizeof(int));
-    assert(checkList(&numbers_list, test_numbers, sizeof(test_numbers) / sizeof(int)) == 0);
-    assert(*((int *) listGetIndex(&numbers_list, 2)->data_) == 3);
-    listDestroy(&numbers_list, NULL);
-  
-    // second test
-    number = 11;
-    prepareList(&numbers_list, test_numbers, sizeof(test_numbers) / sizeof(int));
-    assert(listAppendBack(&numbers_list, &number) != NULL);
-    assert(checkList(&numbers_list, test_numbers2, sizeof(test_numbers2) / sizeof(int)) == 0);
-    assert(*((int *) listGetIndex(&numbers_list, 2)->data_) == 3);
-    listDestroy(&numbers_list, NULL);
-  
-    // third  test
-    listInit(&numbers_list, sizeof(int));
-    number = 1;
-    assert(listAppendBack(&numbers_list, &number) != NULL);
-    number = 6;
-    assert(listAppendBack(&numbers_list, &number) != NULL);
-    assert(checkList(&numbers_list, test_numbers4, sizeof(test_numbers4) / sizeof(int)) == 0);
+    TEST_START(1);
+    
+    if(prepareList(&numbers_list, test_numbers, sizeof(test_numbers) / sizeof(int)) != 0)
+        return -1;
+        
+    if(checkList(&numbers_list, test_numbers, sizeof(test_numbers) / sizeof(int)) != 0)
+        return -1;
+        
+    if(*((int *) listGetIndex(&numbers_list, 0)->data_) != 1) 
+        return -1;    
+    if(*((int *) listGetIndex(&numbers_list, 2)->data_) != 3) 
+        return -1;
+    if(*((int *) listGetIndex(&numbers_list, 4)->data_) != 10) 
+        return -1;
+        
     listDestroy(&numbers_list, NULL);
     
-    // fourth test
+    TEST_END(1);
+  
+  
+    // second test
+    TEST_START(2);
+    
     listInit(&numbers_list, sizeof(int));
-    prepareList(&numbers_list, test_numbers5, sizeof(test_numbers5) / sizeof(int));
-    listForEach(&numbers_list, for_each_cb, test_numbers5);
-    assert(error == 0);
-    listDestroy(&numbers_list, free_data_cb);
-    assert(error == 0);
+    listInit(&numbers_list2, sizeof(int));
+    
+    number = 0;
+    if(listAppendFront(&numbers_list, &number) == NULL)
+        return -1;
+    number = -1;
+    if(listAppendFront(&numbers_list, &number) == NULL)
+        return -1;
+        
+    number = 11;
+    if(listAppendBack(&numbers_list2, &number) == NULL)
+        return -1;
+    number = 12;
+    if(listAppendBack(&numbers_list2, &number) == NULL)
+        return -1;
+        
+    if(listChain(&numbers_list, &numbers_list2) == NULL)
+        return -1;
+        
+    if(checkList(&numbers_list, test_numbers2, sizeof(test_numbers2) / sizeof(int)) != 0)
+        return -1;
+        
+    listDestroy(&numbers_list, NULL);
+    listDestroy(&numbers_list2, NULL);
+    
+    TEST_END(2);
+    
+    
+    // third test
+    TEST_START(3);
+    
+    if(prepareList(&numbers_list, test_numbers3, sizeof(test_numbers3) / sizeof(int)) != 0)
+        return -1;
+    
+    listForEach(&numbers_list, listForEachCB, test_numbers3);
+    if(error != 0)
+        return -1;
+    
+    number = 1;
+    found_node = listSearchFirst(&numbers_list, &number, listCmpEqual);
+    if(found_node == NULL || found_node != listGetIndex(&numbers_list, 0))
+        return -1;
+    found_node = listSearchLast(&numbers_list, &number, listCmpEqual);
+    if(found_node == NULL || found_node != listGetIndex(&numbers_list, 9))
+        return -1;
+        
+    number = 7;
+    found_node = listSearchFirst(&numbers_list, &number, listCmpEqual);
+    if(found_node == NULL || found_node != listGetIndex(&numbers_list, 1))
+        return -1;
+    found_node = listSearchLast(&numbers_list, &number, listCmpEqual);
+    if(found_node == NULL || found_node != listGetIndex(&numbers_list, 7))
+        return -1;
+    
+    number = 0;
+    found_node = listSearchFirst(&numbers_list, &number, listCmpLessEqual);
+    if(found_node == NULL || *((int *) found_node->data_) != 0)
+        return -1;
+    found_node = listSearchLast(&numbers_list, &number, listCmpLessEqual);
+    if(found_node == NULL || *((int *) found_node->data_) != 0)
+        return -1;
+    
+    listDestroy(&numbers_list, NULL);
+    
+    TEST_END(3);
+    
+    
+    // fourth test
+    TEST_START(4);
+    
+    listInit(&numbers_list, sizeof(int));
+    listInit(&numbers_list2, sizeof(int));
+    listInit(&numbers_list3, sizeof(int));
+    
+    if(prepareList(&numbers_list2, test_numbers4, sizeof(test_numbers4) / sizeof(int)) != 0)
+        return -1;
+    if(prepareList(&numbers_list3, test_numbers5, sizeof(test_numbers5) / sizeof(int)) != 0)
+        return -1;
+        
+    if(listChain(&numbers_list, &numbers_list2) == NULL)
+        return -1;
+    if(listChain(&numbers_list3, &numbers_list2) == NULL)
+        return -1;
+        
+    if(listMoveNode(&numbers_list, listGetIndex(&numbers_list, 0), &numbers_list2) == NULL)
+        return -1;
+    if(listChain(&numbers_list2, &numbers_list3) == NULL)
+        return -1;
+    if(listMoveNode(&numbers_list, listGetIndex(&numbers_list, 3), &numbers_list2) == NULL)
+        return -1;
+    if(listChain(&numbers_list, &numbers_list2) == NULL)
+        return -1;
+        
+    if(checkList(&numbers_list, test_numbers3, sizeof(test_numbers3) / sizeof(int)) != 0)
+        return -1;
+    
+    listDestroy(&numbers_list, listFreeDataCBTestNumbers3);
+    if(error != 0)
+        return -1;
+    listDestroy(&numbers_list2, NULL);
+    listDestroy(&numbers_list3, NULL);
+
+    TEST_END(4);
+    
     
     return 0;
 }
