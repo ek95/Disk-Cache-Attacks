@@ -424,7 +424,7 @@ int main(int argc, char* argv[])
 
 
     // process command line arguments
-    if(parseCmdArgs(&argv[1], argc - 1, &cmd_line_conf, &parsed_cmd_line) < 0) {
+    if(parseCmdArgs(&argv[1], argc - 1, &cmd_line_conf, &parsed_cmd_line) != 0) {
         usageError(argv[0]);
         goto error;
     }
