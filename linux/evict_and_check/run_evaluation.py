@@ -22,7 +22,7 @@ EV_CHK_BINARY = "ev_chk"
 TARGET_FILE_REL_PATH = "./build/bin/test.so"
 TARGET_PAGE = 1
 ACCESS_BINARY_REL_PATH = "../tools/access/bin/access"
-ACCESS_COUNT = 3600
+ACCESS_COUNT = 10
 ACCESS_PERIOD_MS = 1000
 LOG_REL_FOLDER = "./logs"
 TRACE_NAME = "trace.csv"
@@ -36,6 +36,7 @@ IOSTAT_RESULT_LOG_NAME = "iostat.log"
 
 def evChkPipeWorker(args):
     for line in args["pipe"]:
+        #print(line)
         if "Ready..." in line:
             args["ready_sem"].release()
     # always release if program ended
@@ -126,19 +127,22 @@ iostat_f.close()
 # parse trace file
 trace_data = numpy.genfromtxt(LOG_REL_FOLDER + "/" + TRACE_NAME,
                               delimiter=";", skip_header=3)
-# calculate mean, std
-eviction_time_mean = numpy.mean(trace_data[:, 2])
-eviction_time_std = numpy.sqrt(numpy.var(trace_data[:, 2]))
 
+if trace_data.size == 0:
+    print("No eviction was possible!")
+else:
+    # calculate mean, std
+    eviction_time_mean = numpy.mean(trace_data[:, 2])
+    eviction_time_std = numpy.sqrt(numpy.var(trace_data[:, 2]))
 
-# print evaluation results + save to file
-print("")
-print("Samples: " + str(len(trace_data[:, 2])))
-print("Eviction time mean [ns]: " + str(eviction_time_mean))
-print("Eviction time std [ns]: " + str(eviction_time_std))
+    # print evaluation results + save to file
+    print("")
+    print("Samples: " + str(len(trace_data[:, 2])))
+    print("Eviction time mean [ns]: " + str(eviction_time_mean))
+    print("Eviction time std [ns]: " + str(eviction_time_std))
 
-log_f = open(LOG_REL_FOLDER + "/" + EVALUATION_NAME, "w+")
-log_f.write("Samples;{}\n".format(len(trace_data[:, 2])))
-log_f.write("Eviction time mean [ns];{}\n".format(eviction_time_mean))
-log_f.write("Eviction time std [ns];{}\n".format(eviction_time_std))
-log_f.close()
+    log_f = open(LOG_REL_FOLDER + "/" + EVALUATION_NAME, "w+")
+    log_f.write("Samples;{}\n".format(len(trace_data[:, 2])))
+    log_f.write("Eviction time mean [ns];{}\n".format(eviction_time_mean))
+    log_f.write("Eviction time std [ns];{}\n".format(eviction_time_std))
+    log_f.close()

@@ -60,10 +60,11 @@
 #include <zconf.h>
 #include <assert.h>
 #include <limits.h>
-#include "util/cmdline/cmdline.h"
-#include "util/dynarray/dynarray.h"
-#include "util/list/list.h"
-#include "util/pageflags/pageflags.h"
+#include "cmdline.h"
+#include "dynarray.h"
+#include "list.h"
+#include "pageflags.h"
+#include "filemap.h"
 #include "config.h"
 
 
@@ -74,7 +75,6 @@
 // general defines
 //#define _DEBUG_
 //#define _DETAILED_EVICTION_SET_STAT_
-#define FILE_COPY_BS (1*1024*1024)
 // file names, paths
 #define EVICTION_FILENAME "eviction.ram"
 #define HISTOGRAM_FILENAME_TIME "histogram_time.csv"
@@ -143,15 +143,6 @@ const size_t SWITCHES_ARG_COUNT[SWITCHES_COUNT] = { 0, 1, 1 };
 /*-----------------------------------------------------------------------------
  * TYPE DEFINITIONS
  */
-typedef struct _FileMapping_
-{
-    int fd_;
-    void* addr_;
-    size_t size_;
-    size_t size_pages_;
-    unsigned char* page_status_;
-} FileMapping;
-
 typedef struct _PageSequence_
 {
     size_t offset_;
@@ -266,8 +257,6 @@ typedef struct _Attack_
  */
 
 // helper functions for custom datatypes
-void initFileMapping(FileMapping* file_mapping);
-void closeFileMapping(void* arg);
 int initCachedFile(CachedFile *cached_file);
 void closeCachedFile(void* arg);
 void closeCachedFileArrayFreeOnly(void *arg);
@@ -290,7 +279,6 @@ void exitAttack(Attack* attack);
 
 // attack function related
 void configAttack(Attack *attack);
-int createRandomFile(char *filename, size_t ram_size);
 int profileAttackWorkingSet(AttackWorkingSet* ws, char* target_obj_path);
 int profileResidentPageSequences(CachedFile* current_cached_file, size_t ps_add_threshold);
 int pageSeqCmp(void* node, void* data);
@@ -458,34 +446,13 @@ int main(int argc, char* argv[])
     // optional: mlock self
     if(attack.mlock_self_)
     {
-        // open self
-        self_mapping.fd_ = open(argv[0], O_RDONLY);
-        if(self_mapping.fd_ < 0)
-        {
-            printf(FAIL "Error (%s) at open: %s ...\n", strerror(errno), argv[0]);
-            goto error;
-        }
-
-        // get stat about self
-        ret = fstat(self_mapping.fd_, &obj_stat);
-        if(ret != 0)
-        {
-            printf(FAIL "Error (%s) at fstat: %s...\n", strerror(errno), argv[0]);
-            goto error;
-        }
-
         // map self
-        self_mapping.size_ = obj_stat.st_size;
-        self_mapping.size_pages_ = (obj_stat.st_size + PAGE_SIZE - 1) / PAGE_SIZE;
-        // map binary as private, readable and executable
-        self_mapping.addr_ =
-            mmap(NULL, self_mapping.size_, PROT_READ | PROT_EXEC, MAP_PRIVATE, self_mapping.fd_, 0);
-        if(self_mapping.addr_ == MAP_FAILED)
+        if(mapFile(&self_mapping, argv[0], O_RDONLY, PROT_READ | PROT_EXEC, MAP_PRIVATE) != 0)
         {
-            printf(FAIL "Error (%s) at mmap: %s...\n", strerror(errno), argv[0]);
+            printf(FAIL "Error (%s) at mapFile for: %s ...\n", strerror(errno), argv[0]);
             goto error;
         }
-
+      
         // mlock self
         ret = mlock(self_mapping.addr_, self_mapping.size_);
         if(ret != 0)
@@ -503,40 +470,20 @@ int main(int argc, char* argv[])
         goto error;
     }
 
-    attack.target_obj_.fd_ = open(target_obj_path, O_RDONLY);
-    if(attack.target_obj_.fd_ < 0)
+    // map target object
+    if(mapFile(&attack.target_obj_, target_obj_path, O_RDONLY, PROT_READ, MAP_PRIVATE) != 0)
     {
-        printf(FAIL "Error (%s) at open: %s...\n", strerror(errno), target_obj_path);
+        printf(FAIL "Error (%s) at mapFile for: %s ...\n", strerror(errno), target_obj_path);
         goto error;
-    }
-
-    // fetch target binary size
-    ret = fstat(attack.target_obj_.fd_, &obj_stat);
-    if(ret != 0)
-    {
-        printf(FAIL "Error (%s) at fstat for %s...\n", strerror(errno), target_obj_path);
-        goto error;
-    }
+    }    
 
     // check if target page is out of bound
-    if(target_offset > obj_stat.st_size)
+    if(target_offset > attack.target_obj_.size_)
     {
         printf(FAIL "Target page out of bound!\n");
         goto error;
     }
     printf(INFO "Target offset: %zx\n", target_offset);
-
-    // map target binary
-    attack.target_obj_.size_ = obj_stat.st_size;
-    attack.target_obj_.size_pages_ = (obj_stat.st_size + PAGE_SIZE - 1) / PAGE_SIZE;
-    // map binary as private, readable and executable
-    attack.target_obj_.addr_ =
-        mmap(NULL, attack.target_obj_.size_, PROT_READ | PROT_EXEC, MAP_PRIVATE, attack.target_obj_.fd_, 0);
-    if(attack.target_obj_.addr_ == MAP_FAILED)
-    {
-        printf(FAIL "Error (%s) at mmap: %s...\n", strerror(errno), target_obj_path);
-        goto error;
-    }
     // save target page and address
     attack.target_page_ = target_offset / PAGE_SIZE;
     attack.target_addr_ = (uint8_t *) attack.target_obj_.addr_ + target_offset;
@@ -558,31 +505,14 @@ int main(int argc, char* argv[])
     // optional: map and mlock event binary
     if(parsed_cmd_line.switch_args_[EXT_EVENT_APP_SWITCH][0] != NULL)
     {
-        attack.event_obj_.fd_ = open(parsed_cmd_line.switch_args_[EXT_EVENT_APP_SWITCH][0], O_RDONLY);
-        if(attack.event_obj_.fd_ < 0)
+        // map event binary
+        if(mapFile(&attack.event_obj_, parsed_cmd_line.switch_args_[EXT_EVENT_APP_SWITCH][0], 
+                   O_RDONLY, PROT_READ | PROT_EXEC, MAP_PRIVATE) != 0)
         {
-            printf(FAIL "Error (%s) at open: %s...\n", strerror(errno),
-                   parsed_cmd_line.switch_args_[EXT_EVENT_APP_SWITCH][0]);
+            printf(FAIL "Error (%s) at mapFile for: %s ...\n", strerror(errno), parsed_cmd_line.switch_args_[EXT_EVENT_APP_SWITCH][0]);
             goto error;
-        }
-
-        ret = fstat(attack.event_obj_.fd_, &obj_stat);
-        if(ret != 0)
-        {
-            printf(FAIL "Error (%s) at fstat: %s...\n", strerror(errno), parsed_cmd_line.switch_args_[EXT_EVENT_APP_SWITCH][0]);
-            goto error;
-        }
-
-        attack.event_obj_.size_ = obj_stat.st_size;
-        // map binary as private, readable and executable
-        attack.event_obj_.addr_ =
-            mmap(NULL, attack.event_obj_.size_, PROT_READ | PROT_EXEC, MAP_PRIVATE, attack.event_obj_.fd_, 0);
-        if(attack.event_obj_.addr_ == MAP_FAILED)
-        {
-            printf(FAIL "Error (%s) at mmap: %s...\n", strerror(errno), parsed_cmd_line.switch_args_[EXT_EVENT_APP_SWITCH][0]);
-            goto error;
-        }
-
+        }  
+       
         ret = mlock(attack.event_obj_.addr_, attack.event_obj_.size_);
         if(ret != 0)
         {
@@ -658,38 +588,20 @@ int main(int argc, char* argv[])
 
 
     // create eviction file if it doesn't exist
+    printf(PENDING "Trying to create a %zu MB random file.\nThis might take a while...\n", system_info.totalram / 1024 / 1024);
     ret = createRandomFile(EVICTION_FILENAME, system_info.totalram);
     if(ret != 0)
     {
-        printf(FAIL "Error at createRandomFile...\n");
+        printf(FAIL "Error(%s) at createRandomFile...\n", strerror(errno));
         goto error;
     }
 
     // map eviction memory
-    attack.eviction_set_.mapping_.fd_ = open(EVICTION_FILENAME, O_RDONLY | O_NOATIME);
-    if(attack.eviction_set_.mapping_.fd_ < 0)
+    if(mapFile(&attack.eviction_set_.mapping_, EVICTION_FILENAME, O_RDONLY, PROT_READ | PROT_EXEC, MAP_PRIVATE) != 0)
     {
-        printf(FAIL "Error (%s) at open: %s...\n", strerror(errno), EVICTION_FILENAME);
-        goto error;
-    }
-
-    attack.eviction_set_.mapping_.size_ = system_info.totalram;
-    attack.eviction_set_.mapping_.size_pages_ =
-        (attack.eviction_set_.mapping_.size_ + PAGE_SIZE - 1) / PAGE_SIZE;
-
-    // map the eviction file as private and readable only
-    attack.eviction_set_.mapping_.addr_ = mmap(NULL, attack.eviction_set_.mapping_.size_,
-                                          PROT_READ | PROT_EXEC, MAP_PRIVATE, attack.eviction_set_.mapping_.fd_, 0);
-    if(attack.eviction_set_.mapping_.addr_ == MAP_FAILED)
-    {
-        printf(FAIL "Error (%s) at mmap: %s...\n", strerror(errno), EVICTION_FILENAME);
-        goto error;
-    }
-
-
-    // activate readahead of eviction set pages
-    //posix_fadvise(attack.eviction_set_.mapping_.fd_, 0, 0, POSIX_FADV_RANDOM);
-    //madvise(attack.eviction_set_.mapping_.addr_, attack.eviction_set_.mapping_.size_, MADV_RANDOM);
+            printf(FAIL "Error (%s) at mapFile for: %s ...\n", strerror(errno), EVICTION_FILENAME);
+            goto error;
+    }  
 
 
     printf(PENDING "Initialising...\n");
@@ -876,35 +788,8 @@ cleanup:
 /*-----------------------------------------------------------------------------
  * HELPER FUNCTIONS FOR CUSTOM STRUCTS
  */
-
-
-void initFileMapping(FileMapping* file_mapping)
-{
-    memset(file_mapping, 0, sizeof(FileMapping));
-    file_mapping->fd_ = -1;
-}
-
-
-void closeFileMapping(void* arg)
-{
-    FileMapping *file_mapping = arg;
-
-    if(file_mapping->addr_ != NULL)
-    {
-        munmap(file_mapping->addr_, file_mapping->size_);
-        file_mapping->addr_ = NULL;
-    }
-    if(file_mapping->fd_ >= 0)
-    {
-        close(file_mapping->fd_);
-        file_mapping->fd_ = -1;
-    }
-    free(file_mapping->page_status_);
-}
-
-
 int initCachedFile(CachedFile *cached_file)
-{
+{    
     memset(cached_file, 0, sizeof(CachedFile));
     cached_file->fd_ = -1;
     if(!dynArrayInit(&cached_file->resident_page_sequences_, sizeof(PageSequence), ARRAY_INIT_CAP))
@@ -919,7 +804,7 @@ int initCachedFile(CachedFile *cached_file)
 void closeCachedFile(void* arg)
 {
     CachedFile *cached_file = arg;
-
+    
     if(cached_file->fd_ >= 0)
     {
         close(cached_file->fd_);
@@ -929,9 +814,10 @@ void closeCachedFile(void* arg)
 }
 
 
-void closeCachedFileArrayFreeOnly(void* arg)
+void closeCachedFileArrayFreeOnly(void *arg)
 {
     CachedFile *cached_file = arg;
+    
     dynArrayDestroy(&cached_file->resident_page_sequences_, NULL);
 }
 
@@ -1155,132 +1041,6 @@ void configAttack(Attack *attack)
     attack->sample_wait_time_.tv_nsec = DEF_SAMPLE_WAIT_TIME_NS;
     attack->event_wait_time_.tv_sec = 0;
     attack->event_wait_time_.tv_nsec = DEF_EVENT_WAIT_TIME_NS;
-}
-
-
-int createRandomFile(char* filename, size_t size)
-{
-    int fd;
-    struct stat file_stat;
-    struct statvfs filesys_stat;
-    char cwd[PATH_MAX] = { 0 };
-
-    // open file or if already exists check if current size, else overwrite
-    fd = open(filename, O_CREAT | O_WRONLY | O_EXCL, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
-    if(fd < 0)
-    {
-        if(errno != EEXIST)
-        {
-            return -1;
-        }
-
-        if(stat(filename, &file_stat) != 0)
-        {
-            printf(FAIL "Error (%s) at stat: %s...\n", strerror(errno), filename);
-            return -1;
-        }
-
-        if(file_stat.st_size < size)
-        {
-            close(fd);
-            fd = open(filename, O_CREAT | O_WRONLY | O_TRUNC, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
-            if(fd < 0)
-            {
-                return -1;
-            }
-        }
-        else
-        {
-            printf(INFO "File %s already exists...\n", filename);
-            return 0;
-        }
-    }
-
-    // create new file
-    printf(PENDING "Creating %zu MB random file. This might take a while...\n", size / 1024 / 1024);
-    if(getcwd(cwd, sizeof(cwd)) == NULL)
-    {
-        printf(FAIL "Error (%s) at getcwd...\n", strerror(errno));
-        return -1;
-    }
-
-    if(statvfs(cwd, &filesys_stat) != 0)
-    {
-        printf(FAIL "Error (%s) at statvfs...\n", strerror(errno));
-        return -1;
-    }
-
-    // sanity checks
-    size_t free_disk = filesys_stat.f_bsize * filesys_stat.f_bavail;
-    if(free_disk < size)
-    {
-        printf(FAIL "Free disk space must be greater or equal memory size!\n");
-        return -1;
-    }
-
-    // try fallocate first, if it fails fall back to the much slower file copy
-    if(fallocate(fd, 0, 0, size) != 0)
-    {
-        // fallocate failed, fall back to creating eviction file from /dev/urandom
-        close(fd);
-
-        FILE* rnd_file = fopen(RANDOM_SOURCE_PATH, "rb");
-        if(rnd_file == NULL)
-        {
-            printf(FAIL "Error (%s) at fopen: %s...\n", strerror(errno), RANDOM_SOURCE_PATH);
-            return -1;
-        }
-        FILE* target_file = fopen(filename, "wb");
-        if(target_file == NULL)
-        {
-            printf(FAIL "Error (%s) at fopen: %s...\n", strerror(errno), filename);
-            return -1;
-        }
-        size_t bs = FILE_COPY_BS;
-        size_t rem = size;
-        
-        char* block = malloc(bs);
-        if(block == NULL)
-        {
-            printf(FAIL "Error (%s) at malloc...\n", strerror(errno));
-            return -1;
-        }
-
-        while(rem)
-        {
-            if(fread(block, bs, 1, rnd_file) != 1)
-            {
-                printf(FAIL "Error (%s) at fread: %s...\n", strerror(errno), RANDOM_SOURCE_PATH);
-                fclose(rnd_file);
-                fclose(target_file);
-                free(block);
-                return -1;
-            }
-            if(fwrite(block, bs, 1, target_file) != 1)
-            {
-                printf(FAIL "Error (%s) at fwrite: %s...\n", strerror(errno), filename);
-                fclose(rnd_file);
-                fclose(target_file);
-                free(block);
-                return -1;
-            }
-            if(rem >= bs)
-            {
-                rem -= bs;
-            }
-            else
-            {
-                rem = 0;
-            }
-        }
-
-        fclose(rnd_file);
-        fclose(target_file);
-        free(block);
-    }
-
-    close(fd);
-    return 0;
 }
 
 

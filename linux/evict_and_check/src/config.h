@@ -11,7 +11,6 @@
 // file paths, tags
 #define MEMINFO_PATH "/proc/meminfo" // NOTE default update resolution is 1s
 #define MEMINFO_AVAILABLE_MEM_TAG "MemAvailable:"
-#define RANDOM_SOURCE_PATH "/dev/urandom"
 char* OBJ_SEARCH_PATHS[] =
 {
     "/bin", "/dev/shm", "/etc", /*"/home",*/ "/lib", "/opt",
@@ -24,21 +23,21 @@ char* OBJ_SEARCH_PATHS[] =
 // defines for tuning the attack
 //------------------------------------------------------------------------------
 #define USE_NANOSLEEP
-#define PU_INCREASE 1ULL
-#define DEF_USE_ATTACK_WS 1ULL
-#define DEF_USE_ATTACK_BS 1ULL
+#define PU_INCREASE 2
+#define DEF_USE_ATTACK_WS 1
+#define DEF_USE_ATTACK_BS 1
 #define DEF_MLOCK_SELF 1
 
 #define DEF_WS_SEARCH_PATHS OBJ_SEARCH_PATHS
-#define DEF_WS_PS_ADD_THRESHOLD 16ULL
-#define DEF_WS_ACCESS_THREAD_COUNT 40ULL
-#define DEF_WS_ACCESS_THREADS_PER_PU 4ULL
-#define DEF_WS_ACCESS_SLEEP_TIME_NS 44038253ULL
-#define DEF_WS_ACCESS_SLEEP_TIME_S 0ULL
-#define DEF_WS_EVALUATION 1ULL
-#define DEF_WS_EVICTION_IGNORE_EVALUATION 1ULL
-#define DEF_WS_EVALUATION_SLEEP_TIME_NS 788606419ULL
-#define DEF_WS_EVALUATION_SLEEP_TIME_S 2ULL
+#define DEF_WS_PS_ADD_THRESHOLD READAHEAD_PAGES
+#define DEF_WS_ACCESS_THREAD_COUNT 16
+#define DEF_WS_ACCESS_THREADS_PER_PU 4
+#define DEF_WS_ACCESS_SLEEP_TIME_NS 4000000UL
+#define DEF_WS_ACCESS_SLEEP_TIME_S 0UL
+#define DEF_WS_EVALUATION 1
+#define DEF_WS_EVICTION_IGNORE_EVALUATION 1
+#define DEF_WS_EVALUATION_SLEEP_TIME_NS 0UL
+#define DEF_WS_EVALUATION_SLEEP_TIME_S 1UL
 // TODO not implemented
 #define DEF_WS_PROFILE_UPDATE_ALL_X_EVALUATIONS 60
 
@@ -47,13 +46,13 @@ char* OBJ_SEARCH_PATHS[] =
 
 #define DEF_BS_MEMINFO_FILE_PATH MEMINFO_PATH
 // NOTE determines the granularity of the blocks added to the blocking set
-#define DEF_BS_FILLUP_SIZE 16777216ULL
+#define DEF_BS_FILLUP_SIZE (16 * 1024 * 1024UL)
 // NOTE uses /proc/meminfo as feedback source
 // see also (https://github.com/torvalds/linux/blob/master/Documentation/filesystems/proc.rst)
-#define DEF_BS_MIN_AVAILABLE_MEM 761360623ULL
-#define DEF_BS_MAX_AVAILABLE_MEM 794915055ULL
-#define DEF_BS_EVALUATION_SLEEP_TIME_NS 537661607ULL
-#define DEF_BS_EVALUATION_SLEEP_TIME_S 2ULL
+#define DEF_BS_MIN_AVAILABLE_MEM (256 * 1024 * 1024UL) //256
+#define DEF_BS_MAX_AVAILABLE_MEM (272 * 1024 * 1024UL) // 272
+#define DEF_BS_EVALUATION_SLEEP_TIME_NS 0UL
+#define DEF_BS_EVALUATION_SLEEP_TIME_S 1UL
 
 #define DEF_SS_THREAD_COUNT 0
 
