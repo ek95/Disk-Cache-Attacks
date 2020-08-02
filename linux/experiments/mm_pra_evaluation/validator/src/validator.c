@@ -59,6 +59,7 @@ int main(int argc, char *argv[])
   }
 
 
+  // get system page size
   PAGE_SIZE = sysconf(_SC_PAGESIZE);
   if(PAGE_SIZE == -1)
   {
@@ -128,10 +129,9 @@ int main(int argc, char *argv[])
         goto error;
     }
 
-    tmp = *((uint8_t *) file_mapping.addr_ + TEST_FILE_TARGET_PAGE * PAGE_SIZE);
-
     if(mode == VOL_RELEASED_MAPPED_RO_FILE_PAGE)
     {
+      printf("reached\n");
       nanosleep(&wait_time, NULL);
       madvise(file_mapping.addr_ + TEST_FILE_TARGET_PAGE * PAGE_SIZE, PAGE_SIZE, MADV_DONTNEED);
       munmap(file_mapping.addr_, file_mapping.size_);

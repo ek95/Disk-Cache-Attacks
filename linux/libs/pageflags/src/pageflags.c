@@ -5,6 +5,7 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <fcntl.h>
+#include <errno.h>
 
 
 // TODO maybe add select to prevent stalls
@@ -20,12 +21,14 @@ int openPageFlagsFd(PageFlagsFd *pageflags_fd)
     pageflags_fd->pagemap_fd_ = open(pagemap_path, O_RDONLY);
     if(pageflags_fd->pagemap_fd_ < 0)
     {
+		pageflags_fd->pagemap_fd_ = -1;
         return -1;
     }
 
     pageflags_fd->kpageflags_fd_ = open(KPAGEFLAGS, O_RDONLY);
     if(pageflags_fd->kpageflags_fd_ < 0)
     {
+		pageflags_fd->kpageflags_fd_ = -1;
         close(pageflags_fd->pagemap_fd_);
         return -1;
     }
@@ -36,8 +39,14 @@ int openPageFlagsFd(PageFlagsFd *pageflags_fd)
 
 void closePageFlagsFd(PageFlagsFd *pageflags_fd)
 {
-    close(pageflags_fd->kpageflags_fd_);
-    close(pageflags_fd->pagemap_fd_);
+	if(pageflags_fd->kpageflags_fd_ >= 0)
+	{
+		close(pageflags_fd->kpageflags_fd_);
+	}
+	if(pageflags_fd->pagemap_fd_ >= 0)
+	{
+		close(pageflags_fd->pagemap_fd_);
+	}
 }
 
 
@@ -89,6 +98,7 @@ int getKPageFlagsEntryVpn(PageFlagsFd *pageflags_fd, KPageFlagsEntry *page_flags
 
     if(getPagemapEntryVpn(pageflags_fd, &pme, vpn) != 0 || !pme.present)
     {
+		errno = EFAULT;
         return -1;
     }
 
