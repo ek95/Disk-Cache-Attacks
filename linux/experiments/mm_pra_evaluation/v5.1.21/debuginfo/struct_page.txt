@@ -1,0 +1,76 @@
+struct page {
+	long unsigned int          flags;                /*     0     8 */
+	union {
+		struct {
+			struct list_head lru;            /*     8    16 */
+			struct address_space * mapping;  /*    24     8 */
+			long unsigned int index;         /*    32     8 */
+			long unsigned int private;       /*    40     8 */
+		};                                       /*     8    40 */
+		struct {
+			dma_addr_t dma_addr;             /*     8     8 */
+		};                                       /*     8     8 */
+		struct {
+			union {
+				struct list_head     slab_list; /*     8    16 */
+				struct {
+					struct page * next; /*     8     8 */
+					int    pages;    /*    16     4 */
+					int    pobjects; /*    20     4 */
+				};                       /*     8    16 */
+			};                               /*     8    16 */
+			struct kmem_cache * slab_cache;  /*    24     8 */
+			void *     freelist;             /*    32     8 */
+			union {
+				void * s_mem;            /*    40     8 */
+				long unsigned int counters; /*    40     8 */
+				struct {
+					unsigned int inuse:16; /*    40: 0  4 */
+					unsigned int objects:15; /*    40:16  4 */
+					unsigned int frozen:1; /*    40:31  4 */
+				};                       /*    40     4 */
+			};                               /*    40     8 */
+		};                                       /*     8    40 */
+		struct {
+			long unsigned int compound_head; /*     8     8 */
+			unsigned char compound_dtor;     /*    16     1 */
+			unsigned char compound_order;    /*    17     1 */
+
+			/* XXX 2 bytes hole, try to pack */
+
+			atomic_t   compound_mapcount;    /*    20     4 */
+		};                                       /*     8    16 */
+		struct {
+			long unsigned int _compound_pad_1; /*     8     8 */
+			long unsigned int _compound_pad_2; /*    16     8 */
+			struct list_head deferred_list;  /*    24    16 */
+		};                                       /*     8    32 */
+		struct {
+			long unsigned int _pt_pad_1;     /*     8     8 */
+			pgtable_t  pmd_huge_pte;         /*    16     8 */
+			long unsigned int _pt_pad_2;     /*    24     8 */
+			union {
+				struct mm_struct * pt_mm; /*    32     8 */
+				atomic_t pt_frag_refcount; /*    32     4 */
+			};                               /*    32     8 */
+			spinlock_t ptl;                  /*    40     4 */
+		};                                       /*     8    40 */
+		struct {
+			struct dev_pagemap * pgmap;      /*     8     8 */
+			long unsigned int hmm_data;      /*    16     8 */
+			long unsigned int _zd_pad_1;     /*    24     8 */
+		};                                       /*     8    24 */
+		struct callback_head callback_head __attribute__((__aligned__(8))); /*     8    16 */
+	} __attribute__((__aligned__(8)));                                               /*     8    40 */
+	union {
+		atomic_t           _mapcount;            /*    48     4 */
+		unsigned int       page_type;            /*    48     4 */
+		unsigned int       active;               /*    48     4 */
+		int                units;                /*    48     4 */
+	};                                               /*    48     4 */
+	atomic_t                   _refcount;            /*    52     4 */
+	struct mem_cgroup *        mem_cgroup;           /*    56     8 */
+
+	/* size: 64, cachelines: 1, members: 5 */
+	/* forced alignments: 1 */
+} __attribute__((__aligned__(16)));

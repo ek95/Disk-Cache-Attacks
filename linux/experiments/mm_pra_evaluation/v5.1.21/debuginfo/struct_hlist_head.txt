@@ -1,0 +1,6 @@
+struct hlist_head {
+	struct hlist_node *        first;                /*     0     8 */
+
+	/* size: 8, cachelines: 1, members: 1 */
+	/* last cacheline: 8 bytes */
+};

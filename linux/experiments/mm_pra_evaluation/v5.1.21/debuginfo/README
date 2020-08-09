@@ -1,0 +1,3 @@
+This directory contains debug information about structs which are used to get the mapping from page to filename. 
+The here presented information was extracted from a linux kernel version 5.1.21 build with:
+	"pahole -C <struct name> <extracted kernel image with debug infos>"

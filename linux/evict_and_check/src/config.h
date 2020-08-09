@@ -24,8 +24,8 @@ char* OBJ_SEARCH_PATHS[] =
 //------------------------------------------------------------------------------
 #define USE_NANOSLEEP
 #define PU_INCREASE 2
-#define DEF_USE_ATTACK_WS 0
-#define DEF_USE_ATTACK_BS 1
+#define DEF_USE_ATTACK_WS 1
+#define DEF_USE_ATTACK_BS 0
 #define DEF_MLOCK_SELF 1
 
 #define DEF_WS_SEARCH_PATHS OBJ_SEARCH_PATHS
@@ -49,8 +49,8 @@ char* OBJ_SEARCH_PATHS[] =
 #define DEF_BS_FILLUP_SIZE (16 * 1024 * 1024UL)
 // NOTE uses /proc/meminfo as feedback source
 // see also (https://github.com/torvalds/linux/blob/master/Documentation/filesystems/proc.rst)
-#define DEF_BS_MIN_AVAILABLE_MEM (128 * 1024 * 1024UL) //256
-#define DEF_BS_MAX_AVAILABLE_MEM (192 * 1024 * 1024UL) // 272
+#define DEF_BS_MIN_AVAILABLE_MEM (256 * 1024 * 1024UL) //256
+#define DEF_BS_MAX_AVAILABLE_MEM (272 * 1024 * 1024UL) // 272
 #define DEF_BS_EVALUATION_SLEEP_TIME_NS 0UL
 #define DEF_BS_EVALUATION_SLEEP_TIME_S 1UL
 

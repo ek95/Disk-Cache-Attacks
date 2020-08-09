@@ -1,0 +1,77 @@
+struct inode {
+	umode_t                    i_mode;               /*     0     2 */
+	short unsigned int         i_opflags;            /*     2     2 */
+	kuid_t                     i_uid;                /*     4     4 */
+	kgid_t                     i_gid;                /*     8     4 */
+	unsigned int               i_flags;              /*    12     4 */
+	struct posix_acl *         i_acl;                /*    16     8 */
+	struct posix_acl *         i_default_acl;        /*    24     8 */
+	const struct inode_operations  * i_op;           /*    32     8 */
+	struct super_block *       i_sb;                 /*    40     8 */
+	struct address_space *     i_mapping;            /*    48     8 */
+	void *                     i_security;           /*    56     8 */
+	/* --- cacheline 1 boundary (64 bytes) --- */
+	long unsigned int          i_ino;                /*    64     8 */
+	union {
+		const unsigned int i_nlink;              /*    72     4 */
+		unsigned int       __i_nlink;            /*    72     4 */
+	};                                               /*    72     4 */
+	dev_t                      i_rdev;               /*    76     4 */
+	loff_t                     i_size;               /*    80     8 */
+	struct timespec64  i_atime;                      /*    88    16 */
+	struct timespec64  i_mtime;                      /*   104    16 */
+	struct timespec64  i_ctime;                      /*   120    16 */
+	/* --- cacheline 2 boundary (128 bytes) was 8 bytes ago --- */
+	spinlock_t                 i_lock;               /*   136     4 */
+	short unsigned int         i_bytes;              /*   140     2 */
+	u8                         i_blkbits;            /*   142     1 */
+	u8                         i_write_hint;         /*   143     1 */
+	blkcnt_t                   i_blocks;             /*   144     8 */
+	long unsigned int          i_state;              /*   152     8 */
+	struct rw_semaphore i_rwsem;                     /*   160    40 */
+	/* --- cacheline 3 boundary (192 bytes) was 8 bytes ago --- */
+	long unsigned int          dirtied_when;         /*   200     8 */
+	long unsigned int          dirtied_time_when;    /*   208     8 */
+	struct hlist_node  i_hash;                       /*   216    16 */
+	struct list_head   i_io_list;                    /*   232    16 */
+	struct bdi_writeback *     i_wb;                 /*   248     8 */
+	/* --- cacheline 4 boundary (256 bytes) --- */
+	int                        i_wb_frn_winner;      /*   256     4 */
+	u16                        i_wb_frn_avg_time;    /*   260     2 */
+	u16                        i_wb_frn_history;     /*   262     2 */
+	struct list_head   i_lru;                        /*   264    16 */
+	struct list_head   i_sb_list;                    /*   280    16 */
+	struct list_head   i_wb_list;                    /*   296    16 */
+	union {
+		struct hlist_head i_dentry;              /*   312     8 */
+		struct callback_head i_rcu __attribute__((__aligned__(8))); /*   312    16 */
+	} __attribute__((__aligned__(8)));                                               /*   312    16 */
+	/* --- cacheline 5 boundary (320 bytes) was 8 bytes ago --- */
+	atomic64_t                 i_version;            /*   328     8 */
+	atomic_t                   i_count;              /*   336     4 */
+	atomic_t                   i_dio_count;          /*   340     4 */
+	atomic_t                   i_writecount;         /*   344     4 */
+	atomic_t                   i_readcount;          /*   348     4 */
+	const struct file_operations  * i_fop;           /*   352     8 */
+	struct file_lock_context * i_flctx;              /*   360     8 */
+	struct address_space i_data __attribute__((__aligned__(8))); /*   368   160 */
+	/* --- cacheline 8 boundary (512 bytes) was 16 bytes ago --- */
+	struct list_head   i_devices;                    /*   528    16 */
+	union {
+		struct pipe_inode_info * i_pipe;         /*   544     8 */
+		struct block_device * i_bdev;            /*   544     8 */
+		struct cdev *      i_cdev;               /*   544     8 */
+		char *             i_link;               /*   544     8 */
+		unsigned int       i_dir_seq;            /*   544     4 */
+	};                                               /*   544     8 */
+	__u32                      i_generation;         /*   552     4 */
+	__u32                      i_fsnotify_mask;      /*   556     4 */
+	struct fsnotify_mark_connector * i_fsnotify_marks; /*   560     8 */
+	struct fscrypt_info *      i_crypt_info;         /*   568     8 */
+	/* --- cacheline 9 boundary (576 bytes) --- */
+	void *                     i_private;            /*   576     8 */
+
+	/* size: 584, cachelines: 10, members: 52 */
+	/* forced alignments: 2 */
+	/* last cacheline: 8 bytes */
+} __attribute__((__aligned__(8)));

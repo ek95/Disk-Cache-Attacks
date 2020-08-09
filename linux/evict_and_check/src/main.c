@@ -645,14 +645,20 @@ int main(int argc, char* argv[])
     }
 
     // manager for blocking set
-    if(attack.use_attack_bs_ && pthread_create(&attack.bs_manager_thread_, &thread_attr, bsManagerThread, &attack.blocking_set_) != 0)
+    if(attack.use_attack_bs_) 
     {
-        printf(FAIL "Error (%s) at pthread_create...\n", strerror(errno));
+        if(pthread_create(&attack.bs_manager_thread_, &thread_attr, bsManagerThread, &attack.blocking_set_) != 0)
+        {
+            printf(FAIL "Error (%s) at pthread_create...\n", strerror(errno));
+        }
+        else 
+        {
+            // wait till blocking set is initialized
+            sem_wait(&attack.blocking_set_.initialized_sem_);
+        }
     }
 
 
-    // wait till blocking set is initialized
-    sem_wait(&attack.blocking_set_.initialized_sem_);
     printf(OK "Ready...\n");
     // main event loop
     while(running)

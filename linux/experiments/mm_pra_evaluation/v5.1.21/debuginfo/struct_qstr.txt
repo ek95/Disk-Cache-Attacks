@@ -1,0 +1,13 @@
+struct qstr {
+	union {
+		struct {
+			u32        hash;                 /*     0     4 */
+			u32        len;                  /*     4     4 */
+		};                                       /*     0     8 */
+		u64                hash_len;             /*     0     8 */
+	};                                               /*     0     8 */
+	const unsigned char  *     name;                 /*     8     8 */
+
+	/* size: 16, cachelines: 1, members: 2 */
+	/* last cacheline: 16 bytes */
+};

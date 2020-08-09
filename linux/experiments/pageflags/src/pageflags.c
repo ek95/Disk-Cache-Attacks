@@ -92,7 +92,7 @@ int main(int argc, char *argv[])
   // run
   while(1)
   {
-    printf("q -> quit, a -> access, p -> print pageflags, f -> flush\n");
+    printf("q -> quit, a -> access, r -> read, p -> print pageflags, f -> flush\n");
     printf("> ");
     if(scanf("%c", &choice) == EOF)
     {
@@ -108,6 +108,13 @@ int main(int argc, char *argv[])
     {
       tmp = *addr;
     }
+    else if(choice == 'r')
+    {
+      if(pread(file_mapping.fd_, (uint8_t *) &tmp, 1, TEST_FILE_TARGET_PAGE * PAGE_SIZE) != 1)
+      {
+        printf("Warning: pread was not successfull...");
+      }
+    }
     else if(choice == 'p')
     {
       if(getKPageFlagsEntryVpn(&pageflags_fd, &page_flags, (size_t) addr / PAGE_SIZE) != 0)
@@ -116,7 +123,7 @@ int main(int argc, char *argv[])
         continue;
       }
 
-      printf("referenced: %u\n", page_flags.locked);
+      printf("referenced: %u\n", page_flags.referenced);
       printf("lru: %u\n", page_flags.lru);
       printf("active: %u\n", page_flags.active);
       printf("mmap: %u\n", page_flags.mmap);

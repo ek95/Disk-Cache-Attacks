@@ -1,0 +1,22 @@
+struct address_space {
+	struct inode *             host;                 /*     0     8 */
+	struct xarray      i_pages;                      /*     8    16 */
+	gfp_t                      gfp_mask;             /*    24     4 */
+	atomic_t                   i_mmap_writable;      /*    28     4 */
+	struct rb_root_cached i_mmap;                    /*    32    16 */
+	struct rw_semaphore i_mmap_rwsem;                /*    48    40 */
+	/* --- cacheline 1 boundary (64 bytes) was 24 bytes ago --- */
+	long unsigned int          nrpages;              /*    88     8 */
+	long unsigned int          nrexceptional;        /*    96     8 */
+	long unsigned int          writeback_index;      /*   104     8 */
+	const struct address_space_operations  * a_ops;  /*   112     8 */
+	long unsigned int          flags;                /*   120     8 */
+	/* --- cacheline 2 boundary (128 bytes) --- */
+	errseq_t                   wb_err;               /*   128     4 */
+	spinlock_t                 private_lock;         /*   132     4 */
+	struct list_head   private_list;                 /*   136    16 */
+	void *                     private_data;         /*   152     8 */
+
+	/* size: 160, cachelines: 3, members: 15 */
+	/* last cacheline: 32 bytes */
+} __attribute__((__aligned__(8)));
