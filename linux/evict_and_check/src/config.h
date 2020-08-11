@@ -11,6 +11,7 @@
 // file paths, tags
 #define MEMINFO_PATH "/proc/meminfo" // NOTE default update resolution is 1s
 #define MEMINFO_AVAILABLE_MEM_TAG "MemAvailable:"
+#define RANDOM_SOURCE_PATH "/dev/urandom"
 char* OBJ_SEARCH_PATHS[] =
 {
     "/bin", "/dev/shm", "/etc", /*"/home",*/ "/lib", "/opt",
@@ -23,9 +24,9 @@ char* OBJ_SEARCH_PATHS[] =
 // defines for tuning the attack
 //------------------------------------------------------------------------------
 #define USE_NANOSLEEP
-#define PU_INCREASE 2
+#define PU_INCREASE 1
 #define DEF_USE_ATTACK_WS 1
-#define DEF_USE_ATTACK_BS 0
+#define DEF_USE_ATTACK_BS 1
 #define DEF_MLOCK_SELF 1
 
 #define DEF_WS_SEARCH_PATHS OBJ_SEARCH_PATHS

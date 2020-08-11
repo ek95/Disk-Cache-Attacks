@@ -350,7 +350,6 @@ int main(int argc, char* argv[])
     // variables necessary for general attack function
     size_t target_offset = 0;
     char target_obj_path[PATH_MAX] = { 0 };
-    struct stat obj_stat;
     Attack attack = { 0 };
     FileMapping self_mapping = { 0 };
     unsigned char target_page_status;
