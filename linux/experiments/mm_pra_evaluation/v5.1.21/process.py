@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Note the filenames might not be correct if a inode content changed
 import os
 import sys
 import re
@@ -89,7 +90,7 @@ while line != "":
         device_nr = int(m1.group(3), 16)
         inode_hex_string = m1.group(4)
         page_offset = int(m1.group(5), 16)
-        filename_short = m1.group(6)
+        filename_short = m1.group(6).strip('"').rstrip('"')
 
         # search if shrink_inactive_list is in stack trace
         # (page cache delete was triggered by linux mm)
@@ -113,30 +114,37 @@ while line != "":
             file = inode_file_cache[inode_hex_string]
         else:
             # reverse block device major, minor number to udev name
+            udev_name = None
             if device_nr in minor_major_udev_name_cache:
                 udev_name = minor_major_udev_name_cache[device_nr]
             else:
                 # <linux/kdev_t.h> (https://elixir.bootlin.com/linux/v5.1.21/source/include/linux/kdev_t.h)
                 major = device_nr >> MINOR_BITS
                 minor = device_nr & ((1 << MINOR_BITS) - 1)
-                udev_name = os.popen("udevadm info -rq name /sys/dev/block/" + str(major) + ":" + str(minor) + " 2>/dev/null").read().rstrip()
-                minor_major_udev_name_cache[device_nr] = udev_name
-                pdb.set_trace()
+                udevadm_p = os.popen("udevadm info -rq name /sys/dev/block/" + str(major) + ":" + str(minor) + " 2> /dev/null")
+                output = udevadm_p.read()
+                returncode = udevadm_p.close()
+                if returncode is None and len(output) > 0:
+                    udev_name = output.rstrip()
+                    minor_major_udev_name_cache[device_nr] = udev_name
 
-            # reverse inode to file
-            output = os.popen("debugfs -R 'ncheck " + inode_hex_string + "' " + udev_name + " 2>/dev/null").read()
-            output_lines = output.split("\n")
-            if len(output_lines) < 3:
-                file = UNKNOWN_FILE
-            else:
-                file = output_lines[1].split("\t")[1]
-
+            file = None
+            tries = 0
+            while udev_name is not None and file is None and tries < 5:
+                # reverse inode to file (try max. 5 times)
+                debugfs_p = os.popen("debugfs -R 'ncheck " + inode_hex_string + "' " + udev_name + " 2> /dev/null")
+                output_lines = debugfs_p.read().split("\n")
+                returncode = debugfs_p.close()
+                if returncode is None and "Inode\tPathname" in output_lines[0] and len(output_lines) > 2:
+                    file = output_lines[1].split("\t")[1]
+                    inode_file_cache[inode_hex_string] = file
+                tries += 1
+                
             # populate cache for fast filename retrieval
-            # check if file part corresponds to short filename 
+            # check if file is valid and corresponds to short filename 
             # (consistency check, else return !Unknown!)
-            if filename_short != "" and not (filename_short in file.split("/")[-1]):
+            if file is None or (filename_short != "" and not (filename_short in file.split("/")[-1])):
                 file = UNKNOWN_FILE
-            inode_file_cache[inode_hex_string] = file
     
         evicted_page_info = {   
                                 "file": file, 
@@ -179,6 +187,7 @@ for r in range(len(eviction_runs_statistics["pc_evictions_before_target"])):
     print("Page evictions affter target: %d (%d MiB)" % (pc_evictions_after_target, pc_evictions_after_target * 4096 / 1024 / 1024))
     print("--------------------------------------------------------------------------------")
     # File heatmap
+    print("Evicted pages per unique file:")
     sorted_file_heatmap = dict(sorted(file_heatmap.items(), key=operator.itemgetter(1), reverse=True))
     for file in sorted_file_heatmap:
         print("%s: %d" % (file, file_heatmap[file]))
