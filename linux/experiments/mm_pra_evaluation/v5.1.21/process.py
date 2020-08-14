@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Note the filenames might not be correct if a inode content changed
+# NOTE: The inode-filename reverse mapping might not be correct if a inode content changed.
 import os
 import sys
 import re
@@ -21,9 +21,9 @@ def update_progressbar(i):
 # config command line parsing
 parser = argparse.ArgumentParser(description="Processes the collected data from the mm_pra_evaluation collect script.")
 parser.add_argument("input_file", type=str, help="generated perf trace file from the mm_pra_evaluation collect script")
-parser.add_argument("target_obj", type=str, help="path to the target obj")
+parser.add_argument("target_obj", type=str, help="path to the target object")
 parser.add_argument("target_page", type=int, help="page offset of the targeted page")
-parser.add_argument("output_file", type=str, help="output file with processed information")
+parser.add_argument("output_file", type=str, help="output file with the processed information")
 args = parser.parse_args()
 
 # get target file absolut path
@@ -43,8 +43,7 @@ eviction_runs_statistics = {"pc_evictions_before_target": [], "pc_evictions_afte
 file_heatmap = {}
 eviction_runs_file_heatmap = []
 evicted_page_infos = []
-tid_open_return = {}
-# cache inode file mappings to speed up process
+# cache inode-file mappings to speed up process
 inode_file_cache = {}
 # cache minor, major number to udev name to speed up process
 minor_major_udev_name_cache = {}
@@ -64,14 +63,13 @@ while line != "":
         eviction_runs_file_heatmap.append(file_heatmap)
         line = trace_file.readline()
         continue
-    # start of evictTargetPage function
-    # start collecting information about pages evicted by the mm
+    # start of evictTargetPage function, collect information about pages evicted by the mm
     elif line.find("probe_ev_chk:evictTargetPage") != -1:
         collect_page_info = True
         target_page_evicted = False
         eviction_runs_statistics["pc_evictions_before_target"].append(0)
         eviction_runs_statistics["pc_evictions_after_target"].append(0)
-        page_infos = []
+        evicted_page_infos = []
         file_heatmap = {}
         line = trace_file.readline()
         continue
@@ -81,16 +79,18 @@ while line != "":
         line = trace_file.readline()
         continue
 
-    # collect info about evicted page
-    m1 = re.search(r".*\s+([0-9]+)\s+([0-9\.]+):.*probe:__delete_from_page_cache.*device=(0x[0-9a-zA-Z]+)\s+inode=(0x[0-9a-zA-Z]+)\s+page_offset=(0x[0-9a-zA-Z]+)\s+filename_short=(.*)", line)
-    if m1 is not None:
+    # collect infos about evicted page
+    probe_match = re.search(r"([^\s]*)\s+([0-9]+)\s+([0-9\.]+):.*probe:__delete_from_page_cache.*"
+                            r"device=(0x[0-9a-zA-Z]+)\s+inode=(0x[0-9a-zA-Z]+)\s+page_offset=(0x[0-9a-zA-Z]+).*", line)
+    # probe matched
+    if probe_match is not None:
         # parse regex groups + save information
-        tid = int(m1.group(1)), 
-        time = float(m1.group(2))
-        device_nr = int(m1.group(3), 16)
-        inode_hex_string = m1.group(4)
-        page_offset = int(m1.group(5), 16)
-        filename_short = m1.group(6).strip('"').rstrip('"')
+        image_name = probe_match.group(1)
+        tid = int(probe_match.group(2)), 
+        time = float(probe_match.group(3))
+        device_nr = int(probe_match.group(4), 16)
+        inode_hex_string = probe_match.group(5)
+        page_offset = int(probe_match.group(6), 16)
 
         # search if shrink_inactive_list is in stack trace
         # (page cache delete was triggered by linux mm)
@@ -103,17 +103,16 @@ while line != "":
             line = trace_file.readline()
         # forward to next trace block  
         while line != "\n" and line != "": line = trace_file.readline() 
-        # if shrink active list was not active continue 
+        # if shrink_inactive_list was not active, continue 
         if not shrink_inactive_list:
             line = trace_file.readline()
             continue
         
         # else add page information to statistics 
-        # lookup in cache
         if inode_hex_string in inode_file_cache:
             file = inode_file_cache[inode_hex_string]
         else:
-            # reverse block device major, minor number to udev name
+            # reverse major, minor number of block device to udev name
             udev_name = None
             if device_nr in minor_major_udev_name_cache:
                 udev_name = minor_major_udev_name_cache[device_nr]
@@ -121,7 +120,8 @@ while line != "":
                 # <linux/kdev_t.h> (https://elixir.bootlin.com/linux/v5.1.21/source/include/linux/kdev_t.h)
                 major = device_nr >> MINOR_BITS
                 minor = device_nr & ((1 << MINOR_BITS) - 1)
-                udevadm_p = os.popen("udevadm info -rq name /sys/dev/block/" + str(major) + ":" + str(minor) + " 2> /dev/null")
+                udevadm_p = os.popen("udevadm info -rq name /sys/dev/block/" + str(major) + ":" + str(minor) + 
+                                     " 2> /dev/null")
                 output = udevadm_p.read()
                 returncode = udevadm_p.close()
                 if returncode is None and len(output) > 0:
@@ -137,19 +137,18 @@ while line != "":
                 returncode = debugfs_p.close()
                 if returncode is None and "Inode\tPathname" in output_lines[0] and len(output_lines) > 2:
                     file = output_lines[1].split("\t")[1]
+                    # populate cache for fast filename retrieval
                     inode_file_cache[inode_hex_string] = file
                 tries += 1
-                
-            # populate cache for fast filename retrieval
-            # check if file is valid and corresponds to short filename 
-            # (consistency check, else return !Unknown!)
-            if file is None or (filename_short != "" and not (filename_short in file.split("/")[-1])):
-                file = UNKNOWN_FILE
+
+        if file is None:
+            print("Inode: " + str(inode_hex_string) + " Device_Nr" + str(device_nr) + " Udev: " + str(udev_name))
     
+        # collect data about evicted pages
         evicted_page_info = {   
-                                "file": file, 
-                                "filename_short": filename_short, 
+                                "file": UNKNOWN_FILE if file is None else file, 
                                 "page_offset": page_offset, 
+                                "image_name": image_name,
                                 "tid": tid, 
                                 "time": time
                             }
@@ -158,6 +157,7 @@ while line != "":
         # check if target page was evicted
         if evicted_page_info["file"] == target_obj_abs and evicted_page_info["page_offset"] == args.target_page:
             target_page_evicted= True
+            print("Target page detected...")
         # collect information about evictions
         elif not target_page_evicted:
             eviction_runs_statistics["pc_evictions_before_target"][-1] += 1
@@ -183,8 +183,10 @@ for r in range(len(eviction_runs_statistics["pc_evictions_before_target"])):
     pc_evictions_after_target = eviction_runs_statistics["pc_evictions_after_target"][r]
     print("Run %d" % r)
     print("--------------------------------------------------------------------------------")
-    print("Page evictions before target: %d (%d MiB)" % (pc_evictions_before_target, pc_evictions_before_target * 4096 / 1024 / 1024))
-    print("Page evictions affter target: %d (%d MiB)" % (pc_evictions_after_target, pc_evictions_after_target * 4096 / 1024 / 1024))
+    print("Page evictions before target: %d (%d MiB)" % (pc_evictions_before_target, pc_evictions_before_target * 
+                                                         4096 / 1024 / 1024))
+    print("Page evictions affter target: %d (%d MiB)" % (pc_evictions_after_target, pc_evictions_after_target * 
+                                                         4096 / 1024 / 1024))
     print("--------------------------------------------------------------------------------")
     # File heatmap
     print("Evicted pages per unique file:")
@@ -217,10 +219,11 @@ out_file = open(args.output_file, "w")
 # save as csv
 for eviction_nr in range(len(eviction_runs_page_infos)):
     out_file.write("Eviction\t%d\n" % eviction_nr)
-    out_file.write("Filename\tPage Offset\tTimestamp\n")
+    out_file.write("Run by\tFilename\tPage Offset\tTimestamp\n")
     for evicted_page_nr in range(len(eviction_runs_page_infos[eviction_nr])):
         page_info = eviction_runs_page_infos[eviction_nr][evicted_page_nr]
-        out_file.write("%s\t%d\t%f\n" % (page_info["file"], page_info["page_offset"], page_info["time"]))
+        out_file.write("%s\t%s\t%d\t%f\n" % (page_info["image_name"], page_info["file"], 
+                                             page_info["page_offset"], page_info["time"]))
     out_file.write("\n")
 
 print("Done")

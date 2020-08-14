@@ -58,6 +58,14 @@ int main(int argc, char *argv[])
   }
 
 
+  // open page flags
+  if(openPageFlagsFd(&pageflags_fd) != 0)
+  {
+    printf("Error (%s) at openPageFlags\n", strerror(errno));
+    goto error;
+  }
+
+
   // create test file
   if(createRandomFile(TEST_FILE_PATH, TEST_FILE_SIZE) != 0)
   {
@@ -71,14 +79,6 @@ int main(int argc, char *argv[])
   {
       printf("Error (%s) at mapFile for: %s ...\n", strerror(errno), TEST_FILE_PATH);
       goto error;
-  }
-
-
-  // open page flags
-  if(openPageFlagsFd(&pageflags_fd) != 0)
-  {
-    printf("Error (%s) at openPageFlags\n", strerror(errno));
-    goto error;
   }
 
 
