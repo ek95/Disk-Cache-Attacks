@@ -20,6 +20,7 @@ void initFileMapping(FileMapping *file_mapping)
 {
     memset(file_mapping, 0, sizeof(FileMapping));
     file_mapping->fd_ = -1;
+    file_mapping->addr_ = MAP_FAILED;
 }
 
 
@@ -71,10 +72,10 @@ void closeFileMapping(void *arg)
 {
     FileMapping* file_mapping = arg;
 
-    if(file_mapping->addr_ != NULL)
+    if(file_mapping->addr_ != MAP_FAILED && file_mapping->addr_ != NULL)
     {
         munmap(file_mapping->addr_, file_mapping->size_);
-        file_mapping->addr_ = NULL;
+        file_mapping->addr_ = MAP_FAILED;
     }
     if(file_mapping->fd_ >= 0)
     {

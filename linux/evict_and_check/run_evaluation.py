@@ -23,7 +23,7 @@ TARGET_FILE_REL_PATH = "./build/bin/test.so"
 TARGET_PAGE = 1
 ACCESS_BINARY_REL_PATH = "../tools/access/bin/access"
 ACCESS_COUNT = 10
-ACCESS_PERIOD_MS = 10000
+ACCESS_PERIOD_MS = 1000
 LOG_REL_FOLDER = "./logs"
 TRACE_NAME = "trace.csv"
 EVALUATION_NAME = "evaluation.csv"
@@ -36,7 +36,7 @@ IOSTAT_RESULT_LOG_NAME = "iostat.log"
 
 def evChkPipeWorker(args):
     for line in args["pipe"]:
-        #print(line)
+        # print(line)
         if "Ready..." in line:
             args["ready_sem"].release()
     # always release if program ended

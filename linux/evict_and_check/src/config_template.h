@@ -63,5 +63,6 @@ char* OBJ_SEARCH_PATHS[] =
 
 // #define PREAD_TWO_TIMES
 // #define EVICTION_USE_PREAD
+// #deffine WS_MAP_FILE
 
 #endif
