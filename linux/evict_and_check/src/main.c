@@ -167,14 +167,13 @@ typedef struct _AttackEvictionSet_
 {
     FileMapping mapping_;
     size_t initialise_samples_;
-    size_t initialise_max_runs_;
-#ifdef ES_USE_THREADS
+    size_t initialise_max_runs_;  
+    // only used if ES_USE_THREADS is defined
     size_t access_thread_count_;
     size_t access_threads_per_pu_;
     DynArray access_threads_;
     sem_t worker_start_sem_;
     sem_t worker_join_sem_;
-#endif
 } AttackEvictionSet;
 
 typedef struct _PageAccessThreadESData_
@@ -349,11 +348,12 @@ int main(int argc, char *argv[])
 
     // variables used for processing command line arguments
     CmdLineConf cmd_line_conf =
-        {
-            .mandatory_args_count_ = MANDATORY_ARGS,
-            .switches_count_ = SWITCHES_COUNT,
-            .switches_ = SWITCHES_STR,
-            .switches_arg_count_ = SWITCHES_ARG_COUNT};
+    {
+        .mandatory_args_count_ = MANDATORY_ARGS,
+        .switches_count_ = SWITCHES_COUNT,
+        .switches_ = SWITCHES_STR,
+        .switches_arg_count_ = SWITCHES_ARG_COUNT
+    };
     CmdLineParsed parsed_cmd_line;
     char *endptr = NULL;
 
@@ -620,7 +620,7 @@ int main(int argc, char *argv[])
                attack.working_set_.resident_files_.count_, attack.working_set_.mem_in_ws_, attack.working_set_.ps_add_threshold_);
     }
 
-// if wanted use eviction threads (let them be auto moved by the os to idle cores)
+// if wanted use eviction threads
 #ifdef ES_USE_THREADS
     if (spawnESThreads(&attack.eviction_set_, attack.target_addr_, attack.mincore_check_all_x_bytes_) != 0)
     {
@@ -860,21 +860,19 @@ int initAttackEvictionSet(AttackEvictionSet *es)
 {
     memset(es, 0, sizeof(AttackEvictionSet));
     initFileMapping(&es->mapping_);
-
-#ifdef ES_USE_THREADS
-    if (sem_init(&es->worker_start_sem_, 0, 0) != 0)
+    // only used if ES_USE_THREADS is defined
+    if(sem_init(&es->worker_start_sem_, 0, 0) != 0)
     {
         return -1;
     }
-    if (sem_init(&es->worker_join_sem_, 0, 0) != 0)
+    if(sem_init(&es->worker_join_sem_, 0, 0) != 0)
     {
         return -1;
     }
-    if (!dynArrayInit(&es->access_threads_, sizeof(PageAccessThreadESData), ARRAY_INIT_CAP))
+    if(!dynArrayInit(&es->access_threads_, sizeof(PageAccessThreadESData), ARRAY_INIT_CAP))
     {
         return -1;
     }
-#endif
 
     return 0;
 }
@@ -882,12 +880,10 @@ int initAttackEvictionSet(AttackEvictionSet *es)
 void closeAttackEvictionSet(AttackEvictionSet *es)
 {
     closeFileMapping(&(es->mapping_));
-
-#ifdef ES_USE_THREADS
+    // only used if ES_USE_THREADS is defined
     sem_destroy(&es->worker_start_sem_);
     sem_destroy(&es->worker_join_sem_);
     dynArrayDestroy(&es->access_threads_, closePageAccessThreadESData);
-#endif
 }
 
 int initAttackWorkingSet(AttackWorkingSet *ws)
@@ -1048,10 +1044,9 @@ void configAttack(Attack *attack)
     attack->use_attack_bs_ |= DEF_USE_ATTACK_BS;
     attack->mlock_self_ |= DEF_MLOCK_SELF;
 
-#ifdef ES_USE_THREADS
+    // only used if ES_USE_THREADS is defined
     attack->eviction_set_.access_thread_count_ = DEF_ES_ACCESS_THREAD_COUNT;
     attack->eviction_set_.access_threads_per_pu_ = DEF_ES_ACCESS_THREADS_PER_PU;
-#endif
 
     attack->working_set_.evaluation_ |= DEF_WS_EVALUATION;
     attack->working_set_.eviction_ignore_evaluation_ |= DEF_WS_EVICTION_IGNORE_EVALUATION;
@@ -1483,6 +1478,9 @@ size_t evictTargetPage(Attack *attack)
 {
     size_t accessed_mem_sum = 0;
 
+    // flag eviction running
+    __atomic_store_n(&eviction_running, 1, __ATOMIC_RELAXED);
+
     // resume worker threads
     for (size_t t = 0; t < attack->eviction_set_.access_thread_count_; t++)
     {
@@ -1507,6 +1505,9 @@ size_t evictTargetPage(Attack *attack)
         PageAccessThreadESData *thread_data = dynArrayGet(&attack->eviction_set_.access_threads_, t);
         accessed_mem_sum += thread_data->accessed_mem_;
     }
+
+    // flag eviction done
+    __atomic_store_n(&eviction_running, 0, __ATOMIC_RELAXED);
 
     return accessed_mem_sum;
 }
@@ -1742,13 +1743,13 @@ void *pageAccessThreadES(void *arg)
             }
 
 #ifdef ES_USE_PREAD
-            if (pread(page_thread_data->eviction_mapping_.fd_, (void *)&tmp, 1, p * PAGE_SIZE) != 1)
+            if (pread(page_thread_data->eviction_mapping_->fd_, (void *)&tmp, 1, p * PAGE_SIZE) != 1)
             {
                 // in case of error just print warnings and access whole ES
                 printf(WARNING ES_THREAD_TAG "Error (%s) at pread...\n", strerror(errno));
             }
 #ifdef PREAD_TWO_TIMES
-            if (pread(page_thread_data->eviction_mapping_.fd_, (void *)&tmp, 1, p * PAGE_SIZE) != 1)
+            if (pread(page_thread_data->eviction_mapping_->fd_, (void *)&tmp, 1, p * PAGE_SIZE) != 1)
             {
                 // in case of error just print warnings and access whole ES
                 printf(WARNING ES_THREAD_TAG "Error (%s) at pread...\n", strerror(errno));
@@ -2166,6 +2167,7 @@ void *pageAccessThreadWS(void *arg)
         {
             current_cached_file = (CachedFile *)resident_files_node->data_;
 
+// TODO considering removing if has impact on time
 #ifdef WS_MAP_FILE
             // advise random access to avoid readahead
             madvise(current_cached_file->addr_, current_cached_file->size_, MADV_RANDOM);
@@ -2208,6 +2210,7 @@ void *pageAccessThreadWS(void *arg)
 
         pthread_mutex_unlock(&page_thread_data->resident_files_lock_);
 
+        // TODO consider applying high(er) pressure in times of running eviction
 #ifdef USE_NANOSLEEP
         nanosleep(&page_thread_data->sleep_time_, NULL);
 #else
