@@ -24,8 +24,6 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 # external libs
 include_directories(../../libs/filemap/src)
 add_subdirectory(../../libs/filemap lib/filemap)
-include_directories(../../libs/pageflags/src)
-add_subdirectory(../../libs/pageflags lib/pageflags)
 
 # main project
 add_subdirectory(src)

@@ -358,7 +358,7 @@ int main(int argc, char *argv[])
     char *endptr = NULL;
 
     // variables used for statistics
-    size_t mem_accessed = 0, event_mem_accessed = 0;
+    size_t mem_accessed = 0, event_mem_accessed = 0, mem_accessed_sum = 0;
     FILE *histogram_time_file = NULL, *histogram_mem_file = NULL, *trace_file = NULL;
     struct timespec eviction_start, eviction_end, unix_epoch;
     size_t elapsed_time_eviction_ns = 0, eviction_time_eviction_sum_ns = 0, event_eviction_time_ns = 0;
@@ -616,6 +616,7 @@ int main(int argc, char *argv[])
             printf(FAIL "Error at profileAttackWorkingSet...\n");
             goto error;
         }
+
         printf(INFO "%zu files with %zu mapped bytes of sequences bigger than %zu pages are currently resident in memory.\n",
                attack.working_set_.resident_files_.count_, attack.working_set_.mem_in_ws_, attack.working_set_.ps_add_threshold_);
     }
@@ -722,6 +723,8 @@ int main(int argc, char *argv[])
                 eviction_time_eviction_sum_ns += elapsed_time_eviction_ns;
                 // eviction time per event
                 event_eviction_time_ns += elapsed_time_eviction_ns;
+                // sum of all accessed memory 
+                mem_accessed_sum += mem_accessed;
                 // accessed memory per event
                 event_mem_accessed += mem_accessed;
 
@@ -757,6 +760,7 @@ int main(int argc, char *argv[])
     if (event_counter > 0)
     {
         printf(INFO "Mean time to eviction per event: %f ns..\n", (double)eviction_time_eviction_sum_ns / event_counter);
+        printf(INFO "Mean accessed eviction set per event: %f kB..\n", (double)mem_accessed_sum / 1024 / event_counter);
     }
 
     goto cleanup;
@@ -1193,7 +1197,7 @@ int profileAttackWorkingSet(AttackWorkingSet *ws, char *target_obj_path)
             mem_in_ws += current_cached_file.resident_memory_;
         }
     }
-
+            
     ws->mem_in_ws_ = mem_in_ws;
     DEBUG_PRINT((DEBUG "Finished profiling loaded shared objects (%zu files checked, checked data %zu kB, used as working set %zu kB)!\n",
                  checked_files, memory_checked / 1024, mem_in_ws / 1024));
@@ -1206,7 +1210,6 @@ error:
     closeCachedFile(&current_cached_file);
 
 cleanup:
-
     fts_close(fts_handle);
 
     return ret;
@@ -2116,7 +2119,7 @@ int reevaluateWorkingSetList(List *cached_file_list, AttackWorkingSet *ws)
         // eviction is running stop
         if (ws->eviction_ignore_evaluation_ && __atomic_load_n(&eviction_running, __ATOMIC_RELAXED) == 1)
         {
-            printf(WARNING "Eviction occured during reevaluation, ignoring result...\n");
+            DEBUG_PRINT((DEBUG "Eviction occured during reevaluation, ignoring result...\n"));
             goto error;
         }
 

@@ -1,6 +1,6 @@
 #!/bin/bash
 
-EV_CHK_DIR_REL="../../../evict_and_check/build/bin"
+EV_CHK_DIR_REL="../../../../evict_and_check/build/bin"
 EV_CHK_BINARY="ev_chk"
 EV_CHK_PATH=$EV_CHK_DIR_REL/$EV_CHK_BINARY
 TARGET_BINARY="test.so"

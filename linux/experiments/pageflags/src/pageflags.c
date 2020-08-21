@@ -92,13 +92,16 @@ int main(int argc, char *argv[])
   // run
   while(1)
   {
-    printf("q -> quit, a -> access, r -> read, p -> print pageflags, f -> flush\n");
+    printf("\nq -> quit, a -> access, r -> read, p -> print pageflags, f -> flush\n");
     printf("> ");
-    if(scanf("%c", &choice) == EOF)
+    do
     {
-      printf("Faulty input, exiting...\n");
-      break;
-    }
+      if((choice = getchar()) == EOF)
+      {
+        printf("Faulty input, exiting...\n");
+        goto error;
+      }
+    } while(choice == '\n');
 
     if(choice == 'q')
     {
