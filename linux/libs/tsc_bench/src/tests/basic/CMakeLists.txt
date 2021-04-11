@@ -1,0 +1,4 @@
+add_executable(test_tsc_bench_basic test.c)
+target_link_libraries(test_tsc_bench_basic tsc_bench_lib)
+
+add_test(NAME tsc_bench_basic COMMAND test_tsc_bench_basic)

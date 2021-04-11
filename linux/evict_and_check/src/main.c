@@ -67,6 +67,7 @@
 #include "filemap.h"
 #include "config.h"
 
+
 /*-----------------------------------------------------------------------------
  * DEFINES
  */
@@ -75,7 +76,6 @@
 //#define _DEBUG_
 //#define _DETAILED_EVICTION_SET_STAT_
 // file names, paths
-#define EVICTION_FILENAME "eviction.ram"
 #define HISTOGRAM_FILENAME_TIME "histogram_time.csv"
 #define HISTOGRAM_FILENAME_MEM "histogram_mem.csv"
 
@@ -126,6 +126,7 @@ const size_t SWITCHES_ARG_COUNT[SWITCHES_COUNT] = {0, 1, 1};
 #define ES_THREAD_TAG "[ES Thread] "
 #define SS_THREAD_TAG "[SS Thread] "
 
+
 /*-----------------------------------------------------------------------------
  * MACROS
  */
@@ -137,6 +138,7 @@ const size_t SWITCHES_ARG_COUNT[SWITCHES_COUNT] = {0, 1, 1};
     {                  \
     } while (0)
 #endif
+
 
 /*-----------------------------------------------------------------------------
  * TYPE DEFINITIONS
@@ -269,6 +271,7 @@ typedef struct _Attack_
     struct timespec event_wait_time_;
 } Attack;
 
+
 /*-----------------------------------------------------------------------------
  * FUNCTION PROTOTYPES
  */
@@ -318,6 +321,7 @@ void *suppressThread(void *arg);
 size_t getMappingCount(const unsigned char *status, size_t size_in_pages);
 void usageError(char *app_name);
 
+
 /*-----------------------------------------------------------------------------
  * GLOBAL VARIABLES
  */
@@ -327,6 +331,7 @@ static int used_pus = 0;
 static int MAX_PUS = 0;
 static size_t PAGE_SIZE = 0;
 
+
 /*-----------------------------------------------------------------------------
  * SIGNAL HANDLERS
  */
@@ -335,6 +340,8 @@ void quitHandler(int signal)
     // __ATOMIC_RELAXED = no thread ordering constraints
     __atomic_store_n(&running, 0, __ATOMIC_RELAXED);
 }
+
+
 
 /*-----------------------------------------------------------------------------
  * CODE
@@ -796,6 +803,7 @@ cleanup:
     return ret;
 }
 
+
 /*-----------------------------------------------------------------------------
  * HELPER FUNCTIONS FOR CUSTOM STRUCTS
  */
@@ -811,6 +819,7 @@ int initCachedFile(CachedFile *cached_file)
 
     return 0;
 }
+
 
 void closeCachedFile(void *arg)
 {
@@ -829,6 +838,7 @@ void closeCachedFile(void *arg)
     dynArrayDestroy(&cached_file->resident_page_sequences_, NULL);
 }
 
+
 void closeCachedFileArrayFreeOnly(void *arg)
 {
     CachedFile *cached_file = arg;
@@ -836,11 +846,13 @@ void closeCachedFileArrayFreeOnly(void *arg)
     dynArrayDestroy(&cached_file->resident_page_sequences_, NULL);
 }
 
+
 void initFillUpProcess(FillUpProcess *fp)
 {
     memset(fp, 0, sizeof(FillUpProcess));
     fp->pid_ = -1;
 }
+
 
 void closeFillUpProcess(void *arg)
 {
@@ -853,12 +865,14 @@ void closeFillUpProcess(void *arg)
     fp->pid_ = 0;
 }
 
+
 void closeThread(void *arg)
 {
     pthread_t *thread = arg;
 
     pthread_join(*thread, NULL);
 }
+
 
 int initAttackEvictionSet(AttackEvictionSet *es)
 {
@@ -881,14 +895,17 @@ int initAttackEvictionSet(AttackEvictionSet *es)
     return 0;
 }
 
+
 void closeAttackEvictionSet(AttackEvictionSet *es)
 {
-    closeFileMapping(&(es->mapping_));
     // only used if ES_USE_THREADS is defined
+    dynArrayDestroy(&es->access_threads_, closePageAccessThreadESData);
     sem_destroy(&es->worker_start_sem_);
     sem_destroy(&es->worker_join_sem_);
-    dynArrayDestroy(&es->access_threads_, closePageAccessThreadESData);
+    //-------------------------------------------------------------------------
+     closeFileMapping(&(es->mapping_));
 }
+
 
 int initAttackWorkingSet(AttackWorkingSet *ws)
 {
@@ -905,6 +922,7 @@ int initAttackWorkingSet(AttackWorkingSet *ws)
     return 0;
 }
 
+
 void closeAttackWorkingSet(AttackWorkingSet *ws)
 {
     dynArrayDestroy(&ws->access_threads_, closePageAccessThreadWSData);
@@ -913,6 +931,7 @@ void closeAttackWorkingSet(AttackWorkingSet *ws)
     listDestroy(&ws->tmp_resident_files_, closeCachedFile);
     listDestroy(&ws->tmp_non_resident_files_, closeCachedFile);
 }
+
 
 int initAttackBlockingSet(AttackBlockingSet *bs)
 {
@@ -929,11 +948,13 @@ int initAttackBlockingSet(AttackBlockingSet *bs)
     return 0;
 }
 
+
 void closeAttackBlockingSet(AttackBlockingSet *bs)
 {
     dynArrayDestroy(&bs->fillup_processes_, closeFillUpProcess);
     sem_destroy(&bs->initialized_sem_);
 }
+
 
 int initAttackSuppressSet(AttackSuppressSet *ss)
 {
@@ -946,15 +967,18 @@ int initAttackSuppressSet(AttackSuppressSet *ss)
     return 0;
 }
 
+
 void closeAttackSuppressSet(AttackSuppressSet *ss)
 {
     dynArrayDestroy(&ss->target_readahead_window_, NULL);
 }
 
+
 void initPageAccessThreadESData(PageAccessThreadESData *page_access_thread_es_data)
 {
     memset(page_access_thread_es_data, 0, sizeof(PageAccessThreadESData));
 }
+
 
 void closePageAccessThreadESData(void *arg)
 {
@@ -964,11 +988,13 @@ void closePageAccessThreadESData(void *arg)
     pthread_join(page_access_thread_es_data->tid_, NULL);
 }
 
+
 void initPageAccessThreadWSData(PageAccessThreadWSData *page_access_thread_ws_data)
 {
     memset(page_access_thread_ws_data, 0, sizeof(PageAccessThreadWSData));
     pthread_mutex_init(&page_access_thread_ws_data->resident_files_lock_, NULL);
 }
+
 
 void closePageAccessThreadWSData(void *arg)
 {
@@ -981,6 +1007,7 @@ void closePageAccessThreadWSData(void *arg)
         pthread_attr_destroy(&page_access_thread_ws_data->thread_attr_);
     }
 }
+
 
 int initAttack(Attack *attack)
 {
@@ -1018,6 +1045,7 @@ int initAttack(Attack *attack)
     return 0;
 }
 
+
 void exitAttack(Attack *attack)
 {
     // join all threads and kill all processes
@@ -1038,10 +1066,10 @@ void exitAttack(Attack *attack)
     closeFileMapping(&attack->event_obj_);
 }
 
+
 /*-----------------------------------------------------------------------------
  * FUNCTIONS RELATED TO ATTACK
  */
-
 void configAttack(Attack *attack)
 {
     attack->use_attack_ws_ |= DEF_USE_ATTACK_WS;
@@ -1080,6 +1108,7 @@ void configAttack(Attack *attack)
     attack->event_wait_time_.tv_sec = 0;
     attack->event_wait_time_.tv_nsec = DEF_EVENT_WAIT_TIME_NS;
 }
+
 
 int profileAttackWorkingSet(AttackWorkingSet *ws, char *target_obj_path)
 {
@@ -1215,6 +1244,7 @@ cleanup:
     return ret;
 }
 
+
 int profileResidentPageSequences(CachedFile *current_cached_file, size_t ps_add_threshold)
 {
     int ret = 0;
@@ -1328,6 +1358,7 @@ cleanup:
     return ret;
 }
 
+
 int pageSeqCmp(void *node, void *data)
 {
     if (((PageSequence *)data)->length_ > ((PageSequence *)node)->length_)
@@ -1337,6 +1368,7 @@ int pageSeqCmp(void *node, void *data)
 
     return 0;
 }
+
 
 int blockRAM(AttackBlockingSet *bs, size_t fillup_size)
 {
@@ -1451,6 +1483,7 @@ cleanup:
     return ret;
 }
 
+
 void releaseRAM(AttackBlockingSet *bs, size_t release_size)
 {
     size_t released = 0;
@@ -1466,6 +1499,7 @@ void releaseRAM(AttackBlockingSet *bs, size_t release_size)
     printf(INFO BS_MGR_TAG "Released %zu kB...\n", released_sum / 1024);
 }
 
+
 void releaseRAMCb(void *addr, void *arg)
 {
     FillUpProcess *fp = addr;
@@ -1474,6 +1508,7 @@ void releaseRAMCb(void *addr, void *arg)
     kill(fp->pid_, SIGKILL);
     *released = fp->fillup_size_;
 }
+
 
 #ifdef ES_USE_THREADS
 
@@ -1581,7 +1616,7 @@ size_t evictTargetPage(Attack *attack)
         }
 #endif
 #else
-        tmp = *((uint8_t *)attack->eviction_set_.mapping_.addr_ + (p)*PAGE_SIZE);
+        tmp = *((uint8_t *)attack->eviction_set_.mapping_.addr_ + p * PAGE_SIZE);
 #endif
         clock_gettime(CLOCK_MONOTONIC, &access_end);
 
@@ -1631,6 +1666,7 @@ size_t evictTargetPage(Attack *attack)
 }
 
 #endif
+
 
 int spawnESThreads(AttackEvictionSet *es, void *target_addr, size_t mincore_check_all_x_bytes)
 {
@@ -1708,6 +1744,7 @@ cleanup:
     return ret;
 }
 
+
 void *pageAccessThreadES(void *arg)
 {
     PageAccessThreadESData *page_thread_data = arg;
@@ -1781,6 +1818,7 @@ error:
     return (void *)-1;
 }
 
+
 void *bsManagerThread(void *arg)
 {
     AttackBlockingSet *bs = arg;
@@ -1824,6 +1862,7 @@ void *bsManagerThread(void *arg)
 
     return NULL;
 }
+
 
 size_t parseAvailableMem(char *meminfo_file_path)
 {
@@ -1892,6 +1931,7 @@ size_t parseAvailableMem(char *meminfo_file_path)
 
     return available_mem;
 }
+
 
 // TODO Maybe update profile after certain amount of time.
 void *wsManagerThread(void *arg)
@@ -2028,6 +2068,7 @@ cleanup:
     return ret;
 }
 
+
 void preparePageAccessThreadWSData(AttackWorkingSet *ws)
 {
     ListNode *current_head = NULL;
@@ -2065,6 +2106,7 @@ void preparePageAccessThreadWSData(AttackWorkingSet *ws)
     return;
 }
 
+
 int reevaluateWorkingSet(AttackWorkingSet *ws)
 {
     // ensure the tmp variables are empty
@@ -2087,6 +2129,7 @@ int reevaluateWorkingSet(AttackWorkingSet *ws)
 
     return 0;
 }
+
 
 int reevaluateWorkingSetList(List *cached_file_list, AttackWorkingSet *ws)
 {
@@ -2144,6 +2187,7 @@ error:
     dynArrayDestroy(&current_cached_file.resident_page_sequences_, NULL);
     return -1;
 }
+
 
 void *pageAccessThreadWS(void *arg)
 {
@@ -2224,6 +2268,7 @@ void *pageAccessThreadWS(void *arg)
     return NULL;
 }
 
+
 int spawnSuppressThreads(Attack *attack, pthread_attr_t *thread_attr)
 {
     // readahead surpressing threads for target
@@ -2246,6 +2291,7 @@ int spawnSuppressThreads(Attack *attack, pthread_attr_t *thread_attr)
 
     return 0;
 }
+
 
 void *suppressThread(void *arg)
 {
@@ -2270,6 +2316,7 @@ void *suppressThread(void *arg)
     return NULL;
 }
 
+
 size_t getMappingCount(const unsigned char *status, size_t size_in_pages)
 {
     size_t mapped = 0;
@@ -2281,6 +2328,7 @@ size_t getMappingCount(const unsigned char *status, size_t size_in_pages)
 
     return mapped;
 }
+
 
 void usageError(char *app_name)
 {

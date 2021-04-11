@@ -7,6 +7,7 @@ import re
 import subprocess
 import threading
 import signal
+import time
 
 # require python 3.7 (dict insertion order preservation)
 MIN_PYTHON = (3, 7)
@@ -20,7 +21,7 @@ if sys.version_info < MIN_PYTHON:
 
 CONFIG_TEMPLATE_REL_PATH = "./src/config_template.h"
 CONFIG_OUT_REL_PATH = "./src/config.h"
-GRID_SAMPLE_RUNS = 2
+GRID_SAMPLE_RUNS = 200
 EV_CHK_BINARY_REL_FOLDER = "./build/bin"
 EV_CHK_BINARY = "ev_chk"
 TARGET_FILE_REL_PATH = "./build/bin/test.so"
@@ -31,6 +32,7 @@ ACCESS_PERIOD_MS = 1000
 LOG_REL_FOLDER = "./logs"
 LOG_NAME = "parameters.csv"
 IOSTAT_RESULT_LOG_NAME_TEMPLATE = "iostat_{}.log"
+RUN_SLEEP_TIME_S = 30
 
 
 #-------------------------------------------------------------------------------
@@ -40,6 +42,8 @@ IOSTAT_RESULT_LOG_NAME_TEMPLATE = "iostat_{}.log"
 def castData(data, type):
     if type == "integer":
         return int(data)
+    elif type == "string":
+        return str(data)
     else:
         raise NotImplementedError
 
@@ -89,12 +93,28 @@ def evChkPipeWorker(args):
     args["ready_sem"].release()
 
 
+# considers both ES and WS
 def calcWsAccessThreadsPerPu(data):
     available_pus = os.cpu_count()
+    # 1 for main thread and 1 for BS, WS manager + access threads
     useable_pus = int(available_pus / data["PU_INCREASE"] - 2)
-    access_threads_per_pu = math.ceil(data["WS_ACCESS_THREAD_COUNT"] / useable_pus)
-    # update actual value of access thread count
-    data["WS_ACCESS_THREAD_COUNT"] = access_threads_per_pu * useable_pus
+    # fetch ES and WS access thread count 
+    if "ES_ACCESS_THREAD_COUNT" in data:
+        access_threads_per_pu = math.ceil((data["WS_ACCESS_THREAD_COUNT"] + data["ES_ACCESS_THREAD_COUNT"]) / useable_pus)
+    else:
+        access_threads_per_pu = math.ceil(data["WS_ACCESS_THREAD_COUNT"] / useable_pus)
+    return access_threads_per_pu
+
+
+def calcEsAccessThreadsPerPu(data):
+    available_pus = os.cpu_count()
+    # 1 for main thread and 1 for BS, WS manager + access threads
+    useable_pus = int(available_pus / data["PU_INCREASE"] - 2)
+    # fetch ES and WS access thread count 
+    if "WS_ACCESS_THREAD_COUNT" in data:
+        access_threads_per_pu = math.ceil((data["ES_ACCESS_THREAD_COUNT"] + data["WS_ACCESS_THREAD_COUNT"]) / useable_pus)
+    else:
+        access_threads_per_pu = math.ceil(data["ES_ACCESS_THREAD_COUNT"] / useable_pus)
     return access_threads_per_pu
 
 
@@ -105,8 +125,9 @@ def calcBsMaxAvailableMem(data):
 grid_search_conf = {
     "PU_INCREASE": {
         "data_type": "integer",
-        "method": "fixed",
-        "value": 1
+        "method": "random_range",
+        "min_value": 1,
+        "max_value": 2
     },
     "USE_ATTACK_WS": {
         "data_type": "integer",
@@ -118,17 +139,33 @@ grid_search_conf = {
         "method": "fixed",
         "value": 1
     },
+    "ES_USE_THREADS" : {
+        "data_type": "string",
+        "method": "fixed",
+        "value": "ES_USE_THREADS"    
+    },
+    "ES_ACCESS_THREAD_COUNT": {
+        "data_type": "integer",
+        "method": "random_range",
+        "min_value": 1,
+        "max_value": 100
+    },
     "WS_PS_ADD_THRESHOLD": {
         "data_type": "integer",
         "method": "random_range",
         "min_value": 1,
-        "max_value": 32
+        "max_value": 512
     },
     "WS_ACCESS_THREAD_COUNT": {
         "data_type": "integer",
         "method": "random_range",
         "min_value": 1,
         "max_value": 100
+    },
+    "ES_ACCESS_THREADS_PER_PU": {
+        "data_type": "integer",
+        "method": "func",
+        "function": calcEsAccessThreadsPerPu
     },
     "WS_ACCESS_THREADS_PER_PU": {
         "data_type": "integer",
@@ -138,7 +175,7 @@ grid_search_conf = {
     "WS_ACCESS_SLEEP_TIME_NS": {
         "data_type": "integer",
         "method": "random_range",
-        "min_value": 1000000,
+        "min_value": 1000,
         "max_value": 999999999
     },
     "WS_ACCESS_SLEEP_TIME_S": {
@@ -168,6 +205,11 @@ grid_search_conf = {
         "method": "random_range",
         "min_value": 0,
         "max_value": 5
+    },
+    "PREAD_TWO_TIMES" : {
+        "data_type": "string",
+        "method": "fixed",
+        "value": "PREAD_TWO_TIMES"    
     },
     "BS_FILLUP_SIZE": {
         "data_type": "integer",
@@ -294,5 +336,8 @@ for r in range(GRID_SAMPLE_RUNS):
                     IOSTAT_RESULT_LOG_NAME_TEMPLATE.format(r + 2), "w+")
     iostat_f.write(iostat_p.stdout.read())
     iostat_f.close()
+
+    # wait for reestablishment of working set
+    time.sleep(RUN_SLEEP_TIME_S)
 
 log_f.close()

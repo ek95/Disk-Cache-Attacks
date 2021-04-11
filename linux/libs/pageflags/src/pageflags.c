@@ -37,6 +37,14 @@ int openPageFlagsFd(PageFlagsFd *pageflags_fd)
 }
 
 
+int pageFlagsFdValid(PageFlagsFd *pageflags_fd) {
+    if(pageflags_fd->pagemap_fd_ != -1 && pageflags_fd->kpageflags_fd_ != -1) {
+        return 1;
+    }
+    return 0;
+}
+
+
 void closePageFlagsFd(PageFlagsFd *pageflags_fd)
 {
 	if(pageflags_fd->kpageflags_fd_ >= 0)

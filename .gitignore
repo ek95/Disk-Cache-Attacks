@@ -15,5 +15,14 @@ bin
 lib
 .codelite
 *.workspace
+*.data
 logs
-
+.vscode/
+__pycache__/
+*.data
+*.old
+*.so
+*.mod
+*.ko
+*.o
+raw_trace.txt

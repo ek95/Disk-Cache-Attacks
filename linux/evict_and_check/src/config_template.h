@@ -9,6 +9,7 @@
 // readahead size (/sys/block/xxx/queue/read_ahead_kb)
 #define READAHEAD_PAGES 32
 // file paths, tags
+#define EVICTION_FILENAME "eviction.ram"
 #define MEMINFO_PATH "/proc/meminfo" // NOTE default update resolution is 1s
 #define MEMINFO_AVAILABLE_MEM_TAG "MemAvailable:"
 #define RANDOM_SOURCE_PATH "/dev/urandom"
@@ -49,7 +50,7 @@ char* OBJ_SEARCH_PATHS[] =
 // #define WS_MAP_FILE
 
 // NOTE both for ES and WS
-// #define PREAD_TWO_TIMES
+#define /*PREAD_TWO_TIMES*/
 
 // NOTE runtime of mincore can be neglected (<10ms)
 #define DEF_MINCORE_CHECK_ALL_X_BYTES (DEF_PAGE_SIZE * 256UL)

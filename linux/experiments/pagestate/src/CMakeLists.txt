@@ -1,0 +1,2 @@
+add_executable(pagestate pagestate.c)
+target_link_libraries(pagestate filemap_lib pageflags_lib tsc_bench_lib)

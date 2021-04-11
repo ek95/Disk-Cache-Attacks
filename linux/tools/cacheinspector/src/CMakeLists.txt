@@ -1,0 +1,2 @@
+add_executable(cacheinspector cacheinspector.c)
+target_link_libraries(cacheinspector filemap_lib tsc_bench_lib pageflags_lib)

@@ -1,0 +1,47 @@
+readelf --syms /usr/bin/qemu-system-x86_64 | sort -k2
+
+xmm operation helpers may be used (page 3e0)
+(seems only possible if not supported directly)
+5d0, 5e0 vnc operations
+5fe block driver operations -> may be a target (but probably more frequently used)
+610, 620 qcow2
+smbios might be good target
+47b3d0 floppy disk driver
+cdrom operations -> 5de
+0x725 -> 0x5319
+
+
+-------------------------------------------------------------------------------
+LINUX
+-------------------------------------------------------------------------------
+/drivers/cdrom/cdrom.c
+linux cdrom.c: cdrom_ioctl() parses ioctl and calls functions
+sr.c handles cdrom.c calls for scsi drives
+-------------------------------------------------------------------------------
+QEMU
+-------------------------------------------------------------------------------
+/qemu/hw/scsi/scsi-disk.c
+
+
+-------------------------------------------------------------------------------
+QEMU/KVM
+-------------------------------------------------------------------------------
+Debugging QEMU
+	+ https://vmsplice.net/~stefan/stefanha-fosdem-2015.pdf (default caching mode is writeback)
+Presentations 
+	+ https://www.linux-kvm.org/images/6/64/03x08-Aspen-Fam_Zheng-Improving_the_QEMU_Event_Loop.pdf
+	+ https://www.qemu.org/2019/11/15/micro-optimizing-kvm-vmexits/
+	+ https://vmsplice.net/~stefan/qemu-code-overview.pdf
+	+ https://www.redhat.com/en/blog/deep-dive-virtio-networking-and-vhost-net
+
+-> vCPU run in seperate threads 
+	qemu_kvm_cpu_thread_fn -> kvm_cpu_exec
+-> qemu gives control to kvm which uses hardware virtualization 
+	kvm_vcpu_ioctl(cpu, KVM_RUN, 0)
+-> guest executes operation which can not be satisfied in guest mode 
+	parses return value, example i/o (KVM_EXIT_IO) or memory mapped i/o (KVM_EXIT_MMIO) 
+-> exit to kvm
+-> can not be handled by kernel mode (e.g. device emulation)
+-> exit to qemu in userspace to handle operation
+	
+

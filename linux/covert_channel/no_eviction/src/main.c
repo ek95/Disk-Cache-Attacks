@@ -65,6 +65,7 @@ const size_t READY_PAGE_OFFSET[2] = {0, 1};
 #define OK "\x1b[32;1m[OK]\x1b[0m "
 #define FAIL "\x1b[31;1m[FAIL]\x1b[0m "
 #define USAGE "\x1b[31;1m[USAGE]\x1b[0m "
+#define WARNING "\x1b[33;1m[WARNING]\x1b[0m "
 
 
 /*-----------------------------------------------------------------------------
@@ -288,11 +289,11 @@ int main(int argc, char *argv[])
     }
 
     // preparing test data
-    if(read(random_fd, tst_msg, MESSAGE_SIZE) != MESSAGE_SIZE) 
+    /*if(read(random_fd, tst_msg, MESSAGE_SIZE) != MESSAGE_SIZE) 
     {
-	  printf(FAIL "Error (%s) at read...\n", strerror(errno));
+	    printf(FAIL "Error (%s) at read...\n", strerror(errno));
       goto error;
-	}
+    }*/
 
     // start sender process
     printf(INFO "Starting sender process...\n");
@@ -347,6 +348,13 @@ int main(int argc, char *argv[])
     size_t run = 0;
     for (; run < TEST_RUNS && running; run++)
     {
+      // preparing test data
+      if(read(random_fd, tst_msg, MESSAGE_SIZE) != MESSAGE_SIZE) 
+      {
+        printf(WARNING "Partial read from %s.\n", RANDOM_SRC);
+      }
+            
+
       clock_gettime(CLOCK_REALTIME, &request_start);
       sem_post(send_now);
       sem_wait(receiver_ready);

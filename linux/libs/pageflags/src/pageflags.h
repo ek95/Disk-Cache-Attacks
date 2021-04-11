@@ -8,6 +8,7 @@
 #define MAX_PAGEMAP_PATH_LEN 255
 #define PAGEMAP_PATH_TEMPLATE "/proc/%d/pagemap"
 #define KPAGEFLAGS "/proc/kpageflags"
+#define PAGE_FLAGS_FD_STATIC_INIT {-1, -1}
 
 
 typedef struct {
@@ -79,6 +80,7 @@ typedef struct {
 
 
 int openPageFlagsFd(PageFlagsFd *pageflags_fd);
+int pageFlagsFdValid(PageFlagsFd *pageflags_fd);
 void closePageFlagsFd(PageFlagsFd *pageflags_fd);
 int getPagemapEntryVpn(PageFlagsFd *pageflags_fd, PageMapEntry *entry, size_t vpn);
 int getKPageFlagsEntryPfn(PageFlagsFd *pageflags_fd, KPageFlagsEntry *entry, size_t pfn);

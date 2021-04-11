@@ -9,6 +9,7 @@
 // readahead size (/sys/block/xxx/queue/read_ahead_kb)
 #define READAHEAD_PAGES 32
 // file paths, tags
+#define EVICTION_FILENAME "eviction.ram"
 #define MEMINFO_PATH "/proc/meminfo" // NOTE default update resolution is 1s
 #define MEMINFO_AVAILABLE_MEM_TAG "MemAvailable:"
 #define RANDOM_SOURCE_PATH "/dev/urandom"
@@ -25,25 +26,25 @@ char* OBJ_SEARCH_PATHS[] =
 //------------------------------------------------------------------------------
 #define USE_NANOSLEEP
 #define PU_INCREASE 1
-#define DEF_USE_ATTACK_WS 1
+#define DEF_USE_ATTACK_WS 0
 #define DEF_USE_ATTACK_BS 1
 #define DEF_MLOCK_SELF 1
 
 #define ES_USE_THREADS
-#define DEF_ES_ACCESS_THREAD_COUNT 6
-#define DEF_ES_ACCESS_THREADS_PER_PU 2
+#define DEF_ES_ACCESS_THREAD_COUNT 3
+#define DEF_ES_ACCESS_THREADS_PER_PU 1
 //#define ES_USE_PREAD
 
 #define DEF_WS_SEARCH_PATHS OBJ_SEARCH_PATHS
 #define DEF_WS_PS_ADD_THRESHOLD (READAHEAD_PAGES)
-#define DEF_WS_ACCESS_THREAD_COUNT 14
-#define DEF_WS_ACCESS_THREADS_PER_PU 2
-#define DEF_WS_ACCESS_SLEEP_TIME_NS 10L
+#define DEF_WS_ACCESS_THREAD_COUNT 7
+#define DEF_WS_ACCESS_THREADS_PER_PU 1
+#define DEF_WS_ACCESS_SLEEP_TIME_NS 5000000L
 #define DEF_WS_ACCESS_SLEEP_TIME_S 0UL
 #define DEF_WS_EVALUATION 1
 #define DEF_WS_EVICTION_IGNORE_EVALUATION 1
-#define DEF_WS_EVALUATION_SLEEP_TIME_NS 250000000UL
-#define DEF_WS_EVALUATION_SLEEP_TIME_S 0UL
+#define DEF_WS_EVALUATION_SLEEP_TIME_NS 0UL
+#define DEF_WS_EVALUATION_SLEEP_TIME_S 1UL
 // TODO not implemented
 #define DEF_WS_PROFILE_UPDATE_ALL_X_EVALUATIONS 60
 //#define WS_MAP_FILE
@@ -59,8 +60,8 @@ char* OBJ_SEARCH_PATHS[] =
 #define DEF_BS_FILLUP_SIZE (16 * 1024 * 1024UL)
 // NOTE uses /proc/meminfo as feedback source
 // see also (https://github.com/torvalds/linux/blob/master/Documentation/filesystems/proc.rst)
-#define DEF_BS_MIN_AVAILABLE_MEM (224 * 1024 * 1024UL) // 224
-#define DEF_BS_MAX_AVAILABLE_MEM (288 * 1024 * 1024UL) // 288
+#define DEF_BS_MIN_AVAILABLE_MEM (224 * 1024 * 1024UL)
+#define DEF_BS_MAX_AVAILABLE_MEM (288 * 1024 * 1024UL)
 #define DEF_BS_EVALUATION_SLEEP_TIME_NS 0UL
 #define DEF_BS_EVALUATION_SLEEP_TIME_S 1UL
 

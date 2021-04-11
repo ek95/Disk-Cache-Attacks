@@ -1,0 +1,2 @@
+add_executable(touchadvise touchadvise.c)
+target_link_libraries(touchadvise filemap_lib)

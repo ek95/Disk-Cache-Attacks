@@ -22,12 +22,17 @@ def update_progressbar(i):
 parser = argparse.ArgumentParser(description="Processes the collected data from the mm_pra_evaluation collect script.")
 parser.add_argument("input_file", type=str, help="generated perf trace file from the mm_pra_evaluation collect script")
 parser.add_argument("target_obj", type=str, help="path to the target object")
-parser.add_argument("target_page", type=int, help="page offset of the targeted page")
+parser.add_argument("target_page", type=int, help="offset in pages of the targeted page")
 parser.add_argument("output_file", type=str, help="output file with the processed information")
 args = parser.parse_args()
 
-# get target file absolut path
-target_obj_abs = os.path.abspath(args.target_obj)
+# get target file statistics
+target_obj_stat = os.stat(args.target_obj)
+target_obj_device_nr = target_obj_stat.st_dev
+target_obj_major = os.major(target_obj_device_nr)
+target_obj_minor = os.minor(target_obj_device_nr)
+target_obj_inode = target_obj_stat.st_ino
+target_obj_page_offset = args.target_page
 
 # open input file 
 trace_file = open(args.input_file, "r", errors='ignore')
@@ -44,7 +49,7 @@ file_heatmap = {}
 eviction_runs_file_heatmap = []
 evicted_page_infos = []
 # cache inode-file mappings to speed up process
-inode_file_cache = {}
+device_inode_file_cache = {}
 # cache minor, major number to udev name to speed up process
 minor_major_udev_name_cache = {}
 # go through file line by line
@@ -90,6 +95,7 @@ while line != "":
         time = float(probe_match.group(3))
         device_nr = int(probe_match.group(4), 16)
         inode_hex_string = probe_match.group(5)
+        inode = int(inode_hex_string, 16)
         page_offset = int(probe_match.group(6), 16)
 
         # search if shrink_inactive_list is in stack trace
@@ -109,8 +115,8 @@ while line != "":
             continue
         
         # else add page information to statistics 
-        if inode_hex_string in inode_file_cache:
-            file = inode_file_cache[inode_hex_string]
+        if device_nr in device_inode_file_cache and inode in device_inode_file_cache[device_nr]:
+            file = device_inode_file_cache[device_nr][inode]
         else:
             # reverse major, minor number of block device to udev name
             udev_name = None
@@ -138,14 +144,23 @@ while line != "":
                 if returncode is None and "Inode\tPathname" in output_lines[0] and len(output_lines) > 2:
                     file = output_lines[1].split("\t")[1]
                     # populate cache for fast filename retrieval
-                    inode_file_cache[inode_hex_string] = file
+                    if device_nr not in device_inode_file_cache:
+                        device_inode_file_cache[device_nr] = {}
+                    device_inode_file_cache[device_nr][inode] = file
                 tries += 1
 
         if file is None:
-            print("Inode: " + str(inode_hex_string) + " Device_Nr" + str(device_nr) + " Udev: " + str(udev_name))
+            print("Warning: Filename could not have been gathered:")
+            print("Inode: " + str(inode_hex_string))
+            print("Device number: " + str(device_nr))
+            print("udev name: " + str(udev_name))
+            print("")
     
         # collect data about evicted pages
         evicted_page_info = {   
+                                "device_major": device_nr >> MINOR_BITS,
+                                "device_minor": device_nr & ((1 << MINOR_BITS) - 1), 
+                                "inode": inode,
                                 "file": UNKNOWN_FILE if file is None else file, 
                                 "page_offset": page_offset, 
                                 "image_name": image_name,
@@ -155,9 +170,11 @@ while line != "":
         evicted_page_infos.append(evicted_page_info)
 
         # check if target page was evicted
-        if evicted_page_info["file"] == target_obj_abs and evicted_page_info["page_offset"] == args.target_page:
+        if(evicted_page_info["device_major"] == target_obj_major and 
+           evicted_page_info["device_minor"] == target_obj_minor and
+           evicted_page_info["inode"] == target_obj_inode and 
+           evicted_page_info["page_offset"] == target_obj_page_offset):
             target_page_evicted= True
-            print("Target page detected...")
         # collect information about evictions
         elif not target_page_evicted:
             eviction_runs_statistics["pc_evictions_before_target"][-1] += 1

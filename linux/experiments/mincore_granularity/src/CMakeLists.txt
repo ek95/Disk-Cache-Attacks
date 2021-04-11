@@ -1,0 +1,2 @@
+add_executable(mincore_granularity mincore_granularity.c)
+target_link_libraries(mincore_granularity filemap_lib tsc_bench_lib)

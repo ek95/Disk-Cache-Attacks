@@ -1,0 +1,4 @@
+Reached
+Sample size: 10000000
+Mean: 287.704448
+Standard deviation: 40.49472035976167
