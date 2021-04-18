@@ -32,8 +32,9 @@
 #define ACCESS_MAPPED_CLEAN_FILE_PAGE_USER_2 5
 #define ACCESS_MAPPED_EXEC_CLEAN_FILE_PAGE_USER_1 6
 #define READ_ACCESS_MAPPED_CLEAN_FILE_PAGE_USER_1 7
+#define READ_CLEAN_FILE_PAGE_USER_VMSCAN 8
 #define MIN_MODE READ_CLEAN_FILE_PAGE_USER_1
-#define MAX_MODE READ_ACCESS_MAPPED_CLEAN_FILE_PAGE_USER_1
+#define MAX_MODE READ_CLEAN_FILE_PAGE_USER_VMSCAN
 
 #define WAIT_TIME_NS (100*1000*1000ULL)
 
@@ -54,10 +55,11 @@ const char *experiment_strings[] =
     "read clean file page twice, and print pageflags",
     "read clean file page three times, and print pageflags",
     "read clean file page which is mapped executable once, and print pageflags",
-    "access regulary mapped clean file page once, and print pageflags",
-    "access regulary mapped clean file page twice, and print pageflags",
-    "access executable mapped clean file page once, and print pageflags",
-    "read + access regulary mapped clean file page once, and print pageflags"
+    "access regulary mapped clean file page once, trigger vmscan and print pageflags",
+    "access regulary mapped clean file page twice, trigger vmscan and print pageflags",
+    "access executable mapped clean file page once, trigger vmscan and print pageflags",
+    "read + access regulary mapped clean file page once, trigger vmscan and print pageflags",
+    "read regulary mapped clean file page once, trigger vmscan and print pageflags"
   };
 size_t PAGE_SIZE = 0;
 
@@ -182,7 +184,7 @@ int main(int argc, char *argv[])
   printf("Running experiment %s:\n", experiment_strings[mode]);
   if(mode == READ_CLEAN_FILE_PAGE_USER_1 || mode == READ_MAPPED_EXEC_CLEAN_FILE_PAGE_USER_1)
   {
-    DEBUG_PRINT(("Executing experiment branch 0.\n"));
+    DEBUG_PRINT(("Executing experiment: %i\n", mode));
     // first read access 
     if(pread(test_file_mapping.fd_, (void *) &tmp, 1, TEST_FILE_TARGET_PAGE * PAGE_SIZE) != 1)
     {
@@ -194,7 +196,7 @@ int main(int argc, char *argv[])
   }
   else if(mode == READ_CLEAN_FILE_PAGE_USER_2)
   {
-    DEBUG_PRINT(("Executing experiment branch 1.\n"));
+    DEBUG_PRINT(("Executing experiment: %i\n", mode));
     // first read access 
     if(pread(test_file_mapping.fd_, (void *) &tmp, 1, TEST_FILE_TARGET_PAGE * PAGE_SIZE) != 1)
     {
@@ -210,9 +212,9 @@ int main(int argc, char *argv[])
     // trigger lru_add_drain() by calling posix_fadvice
     posix_fadvise(test_file_mapping.fd_, TEST_FILE_VICTIM_PAGE * PAGE_SIZE, PAGE_SIZE, POSIX_FADV_DONTNEED);
   }
-  else if(mode ==READ_CLEAN_FILE_PAGE_USER_3)
+  else if(mode == READ_CLEAN_FILE_PAGE_USER_3)
   {
-    DEBUG_PRINT(("Executing experiment branch 2.\n"));
+    DEBUG_PRINT(("Executing experiment: %i\n", mode));
     // first read access 
     if(pread(test_file_mapping.fd_, (void *) &tmp, 1, TEST_FILE_TARGET_PAGE * PAGE_SIZE) != 1)
     {
@@ -236,7 +238,7 @@ int main(int argc, char *argv[])
   }
   else if(mode == ACCESS_MAPPED_CLEAN_FILE_PAGE_USER_1)
   {
-    DEBUG_PRINT(("Executing experiment branch 3.\n"));
+    DEBUG_PRINT(("Executing experiment: %i\n", mode));
     // first access
     tmp = *target_addr;
     // victim page
@@ -249,7 +251,7 @@ int main(int argc, char *argv[])
   }
   else if(mode == ACCESS_MAPPED_CLEAN_FILE_PAGE_USER_2)
   {
-    DEBUG_PRINT(("Executing experiment branch 4.\n"));
+    DEBUG_PRINT(("Executing experiment: %i\n", mode));
     // first access
     tmp = *target_addr;
     // victim page
@@ -273,7 +275,7 @@ int main(int argc, char *argv[])
   }
   else if(mode == ACCESS_MAPPED_EXEC_CLEAN_FILE_PAGE_USER_1)
   {
-    DEBUG_PRINT(("Executing experiment branch 5.\n"));
+    DEBUG_PRINT(("Executing experiment: %i\n", mode));
     // first access
     tmp = *target_addr;
     // victim page
@@ -286,7 +288,7 @@ int main(int argc, char *argv[])
   }
   else if(mode == READ_ACCESS_MAPPED_CLEAN_FILE_PAGE_USER_1) 
   {
-    DEBUG_PRINT(("Executing experiment branch 6.\n"));
+    DEBUG_PRINT(("Executing experiment: %i\n", mode));
     // first read access 
     if(pread(test_file_mapping.fd_, (void *) &tmp, 1, TEST_FILE_TARGET_PAGE * PAGE_SIZE) != 1)
     {
@@ -303,7 +305,23 @@ int main(int argc, char *argv[])
     }
     waitUntilVictimPageEvicted(&eviction_file_mapping, victim_addr);
   }
-
+  else if(mode == READ_CLEAN_FILE_PAGE_USER_VMSCAN) 
+  {
+    DEBUG_PRINT(("Executing experiment: %i\n", mode));
+    // first read access 
+    if(pread(test_file_mapping.fd_, (void *) &tmp, 1, TEST_FILE_TARGET_PAGE * PAGE_SIZE) != 1)
+    {
+      printf("Error (%s) at pread\n", strerror(errno));
+      goto error;
+    }
+    // victim page
+    if(pread(test_file_mapping.fd_, (void *) &tmp, 1, TEST_FILE_VICTIM_PAGE * PAGE_SIZE) != 1)
+    {
+      printf("Error (%s) at pread\n", strerror(errno));
+      goto error;
+    }
+    waitUntilVictimPageEvicted(&eviction_file_mapping, victim_addr);
+  }
 
   waitUntilKswapd0Sleeps();
   // for all read modes we must create the page table to query the state 
@@ -330,7 +348,7 @@ cleanup:
 }
 
 
-// not that this accesses the page to create the page table entry
+// NOTE that this accesses the page to create the page table entry
 // in order to not influence the flags ensure kswapd0 is not running
 // when this is called, e.g. all zones have enough free memory
 void printPageflags(PageFlagsFd *pageflags_fd, void *addr) {
@@ -418,7 +436,7 @@ void waitUntilVictimPageEvicted(FileMapping *eviction_file_mapping, void *victim
 void usageError(char *program_name)
 {
   printf("Usage: %s [mode].\n", program_name);
-  for(int i = MIN_MODE; i < MAX_MODE; i++)
+  for(int i = MIN_MODE; i <= MAX_MODE; i++)
   {
     printf("%d: \t%s\n", i, experiment_strings[i]);
   }
