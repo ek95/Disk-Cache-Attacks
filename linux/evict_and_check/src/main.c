@@ -87,7 +87,7 @@
 const char *SWITCHES_STR[SWITCHES_COUNT] = {"-s", "-e", "-t"};
 const size_t SWITCHES_ARG_COUNT[SWITCHES_COUNT] = {0, 1, 1};
 #define MANDATORY_ARGS 2
-#define BINARY_FILENAME_ARG 0
+#define TARGET_PATH_ARG 0
 #define TARGET_OFFSET_ARG 1
 #define USAGE_MSG "Usage: %s [target file] [page to watch] <-s> <-e executable> <-t file>\n\n" \
                   "\t[target file]\n"                                                          \
@@ -300,7 +300,7 @@ void exitAttack(Attack *attack);
 
 // attack function related
 void configAttack(Attack *attack);
-int profileAttackWorkingSet(AttackWorkingSet *ws, char *target_obj_path);
+int profileAttackWorkingSet(AttackWorkingSet *ws, char *target_obj_path, char *eviction_file_path);
 int profileResidentPageSequences(CachedFile *current_cached_file, size_t ps_add_threshold);
 int pageSeqCmp(void *node, void *data);
 int blockRAM(AttackBlockingSet *bs, size_t fillup_size);
@@ -375,6 +375,7 @@ int main(int argc, char *argv[])
     // variables necessary for general attack function
     size_t target_offset = 0;
     char target_obj_path[PATH_MAX] = {0};
+    char eviction_file_path[PATH_MAX] = {0};
     Attack attack = {0};
     FileMapping self_mapping = {0};
     unsigned char target_page_status;
@@ -476,14 +477,13 @@ int main(int argc, char *argv[])
         }
     }
 
-    // get access path of target binary relative to root
-    if (realpath(parsed_cmd_line.mandatory_args_[BINARY_FILENAME_ARG], target_obj_path) == NULL)
+    // get access path of target object relative to root
+    if (realpath(parsed_cmd_line.mandatory_args_[TARGET_PATH_ARG], target_obj_path) == NULL)
     {
         printf(FAIL "Error (%s) at realpath: %s...\n", strerror(errno),
-               parsed_cmd_line.mandatory_args_[BINARY_FILENAME_ARG]);
+               parsed_cmd_line.mandatory_args_[TARGET_PATH_ARG]);
         goto error;
     }
-
     // map target object
     if (mapFile(&attack.target_obj_, target_obj_path, O_RDONLY, PROT_READ, MAP_PRIVATE) != 0)
     {
@@ -607,7 +607,14 @@ int main(int argc, char *argv[])
         goto error;
     }
 
-    // map eviction memory
+    // get access path of eviction file relative to root
+    if (realpath(parsed_cmd_line.mandatory_args_[EVICTION_FILENAME], eviction_file_path) == NULL)
+    {
+        printf(FAIL "Error (%s) at realpath: %s...\n", strerror(errno),
+               parsed_cmd_line.mandatory_args_[EVICTION_FILENAME]);
+        goto error;
+    }
+    // map eviction file
     if (mapFile(&attack.eviction_set_.mapping_, EVICTION_FILENAME, O_RDONLY, PROT_READ | PROT_EXEC, MAP_PRIVATE) != 0)
     {
         printf(FAIL "Error (%s) at mapFile for: %s ...\n", strerror(errno), EVICTION_FILENAME);
@@ -618,7 +625,7 @@ int main(int argc, char *argv[])
     if (attack.use_attack_ws_)
     {
         printf(PENDING "Profiling working set...\n");
-        if (profileAttackWorkingSet(&attack.working_set_, target_obj_path) != 0)
+        if (profileAttackWorkingSet(&attack.working_set_, target_obj_path, eviction_file_path) != 0)
         {
             printf(FAIL "Error at profileAttackWorkingSet...\n");
             goto error;
@@ -1110,7 +1117,7 @@ void configAttack(Attack *attack)
 }
 
 
-int profileAttackWorkingSet(AttackWorkingSet *ws, char *target_obj_path)
+int profileAttackWorkingSet(AttackWorkingSet *ws, char *target_obj_path, char *eviction_file_path)
 {
     FTS *fts_handle = NULL;
     FTSENT *current_ftsent = NULL;
@@ -1163,7 +1170,7 @@ int profileAttackWorkingSet(AttackWorkingSet *ws, char *target_obj_path)
             DEBUG_PRINT((DEBUG "Found possible shared object: %s\n", current_ftsent->fts_path));
 
             // check if the found file matches the eviction file or the target and skip if so
-            if (!strcmp(current_ftsent->fts_name, EVICTION_FILENAME) ||
+            if (!strcmp(current_ftsent->fts_path, eviction_file_path) ||
                 !strcmp(current_ftsent->fts_path, target_obj_path))
             {
                 DEBUG_PRINT((DEBUG "Shared object %s is the eviction file or target, skipping...\n", current_ftsent->fts_name));
@@ -2015,6 +2022,7 @@ void *wsManagerThread(void *arg)
         {
             DEBUG_PRINT((WS_MGR_TAG "Rescanned working set now consists of %zu files (%zu bytes mapped).\n", ws->tmp_resident_files_.count_, ws->tmp_mem_in_ws_));
 
+	     // TODO change to one lock
             // acquire locks
             for (size_t t = 0; t < ws->access_thread_count_; t++)
             {

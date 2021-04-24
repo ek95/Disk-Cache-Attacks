@@ -52,7 +52,7 @@ char* OBJ_SEARCH_PATHS[] =
 // NOTE both for ES and WS
 #define PREAD_TWO_TIMES
 
-// NOTE runtime of mincore can be neglected (<10ms)
+// NOTE runtime of mincore can be neglected (<1ms)
 #define DEF_MINCORE_CHECK_ALL_X_BYTES (DEF_PAGE_SIZE * 256UL)
 
 #define DEF_BS_MEMINFO_FILE_PATH MEMINFO_PATH

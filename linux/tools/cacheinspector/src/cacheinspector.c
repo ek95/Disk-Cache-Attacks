@@ -170,7 +170,7 @@ int main(int argc, char *argv[])
       if(range == 0) {
         range = file_mapping.size_pages_ * PAGE_SIZE;
       }
-      if(offset + range > file_mapping.size_) {
+      if((offset + range) > (file_mapping.size_pages_ * PAGE_SIZE)) {
         printf("Out of range!\n");
         continue;
       }
@@ -194,8 +194,8 @@ int main(int argc, char *argv[])
         }
       }
       else if(choice == 'm') {
-        printf("%lx %lx %d\n", offset, range, advice);
-        if(posix_fadvise(file_mapping.fd_, offset, range, POSIX_FADV_RANDOM) != 0) {
+        //printf("%lx %lx %d\n", offset, range, advice);
+        if(posix_fadvise(file_mapping.fd_, offset, range, advice) != 0) {
           printf("posix_fadvise failed: %s!", strerror(errno));
         }
         if(madvise((uint8_t *) file_mapping.addr_ + offset, range, advice) != 0) {

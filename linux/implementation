@@ -1,0 +1,55 @@
+-------------------------------------------------------------------------------
+			BS Manager Ignore During Eviction
+-------------------------------------------------------------------------------
+
+Possible cases:
+
+	| --------------------- E ---------------------- |
+     | BS Rebalance |      | BS Rebalance |	    | BS Rebalance |
+      A            B        A	          B          A            B
+     	   (1)			   (2)			   (3) 
+     	   
+        |-----E------|
+       | BS Rebalance |
+        A            B
+             (4)
+     		 
+ Rationale: Blocking set should not be changed during eviction with anonymous memory.
+ 	-> Not want to use locks as eviction should not be delayed
+ 	-> Flags do cover most cases
+ 	-> Set at beginning of eviction and cleared at end 
+ 	-> Checked at two points:
+ 		-> Before acquiring information A
+ 		-> Before updating blocking set B
+ 	-> Reasoning:
+ 		(1) - Update does not take place B will avoid it
+ 		(2) - Update does not take place A and B will avoid it
+ 		(3) - Update does not take place A will avoid it
+ 	        (4) - Eviction started between A and actual acquiring of information, ends before flag check B
+		 	-> Actually no update should not take place but:
+		 		- Check and acquiring are directly after each other.
+		 		- Acquiring data is fast, just one read call.
+		 		  Therefore, data will closely resemble state before eviction if eviction is that fast !
+		 		- Is OK. 
+		 	
+Locking is not the best alternative:
+	-> Problem we do not want to delay eviction by any means
+	-> Eviction can be triggered all the time
+	-> If would be locked during BS Rebalance, eviction could not start inbetween
+			-> Depends on how long the whole procedure takes if feasible
+	-> Only harmful case is (4)
+		-> Worst case effect -> Blocking set reduced although it should not, will be recovered later
+		
+Alternative:
+	-> Lock during acquiring of data
+	-> Ensures data is collected during disabled eviction
+	
+	
+-------------------------------------------------------------------------------
+			WS Manager Ignore During Eviction
+-------------------------------------------------------------------------------
+
+Same case with updating working set, but acquring data for updating working set
+takes longer.
+
+

@@ -17,7 +17,7 @@ perf probe -d "evictTargetPage__return"
 
 # set up perf probes
 #-------------------------------------------------------------------------------
-# trace beginning of __delete_from_page_cache and collect information about the evicted page
+# trace beginning of shrink_page_list->__remove_mapping->__delete_from_page_cache and collect information about the evicted page
 perf probe "__delete_from_page_cache device=page->mapping->host->i_sb->s_dev inode=page->mapping->host->i_ino page_offset=page->index"
 # trace start of evictTargetPage function in ev_chk binary
 perf probe -x $EV_CHK_PATH "evictTargetPage"

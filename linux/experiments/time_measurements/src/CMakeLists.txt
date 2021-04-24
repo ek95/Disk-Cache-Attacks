@@ -1,0 +1,2 @@
+add_executable(time_measurements time_measurements.c)
+target_link_libraries(time_measurements filemap_lib tsc_bench_lib)

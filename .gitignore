@@ -26,3 +26,4 @@ __pycache__/
 *.ko
 *.o
 raw_trace.txt
+*.csv
