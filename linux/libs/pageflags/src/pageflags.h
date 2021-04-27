@@ -76,6 +76,11 @@ typedef struct {
   uint64_t unused : 37;
 } KPageFlagsEntry;
 
+typedef union {
+  KPageFlagsEntry page_flags;
+  uint64_t raw;
+} KPageFlagsEntryExtended;
+
 #pragma pack(pop)
 
 
