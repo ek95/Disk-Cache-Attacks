@@ -37,16 +37,17 @@
 #define READ_MAPPED_EXEC_CLEAN_FILE_PAGE_USER_1 4
 #define ACCESS_MAPPED_CLEAN_FILE_PAGE_USER_1 5
 #define ACCESS_MAPPED_CLEAN_FILE_PAGE_USER_2 6
-#define ACCESS_MAPPED_FILE_PAGE_USER_2 7
-#define ACCESS_MAPPED_EXEC_CLEAN_FILE_PAGE_USER_1 8
-#define EXT_READ_ACCESS_MAPPED_EXEC_CLEAN_FILE_PAGE_USER_2 9
-#define READ_ACCESS_MAPPED_CLEAN_FILE_PAGE_USER_1 10
-#define EXT_READ_ACCESS_MAPPED_CLEAN_FILE_PAGE_USER_3 11
-#define EXT_READ_ACCESS_MAPPED_CLEAN_FILE_PAGE_USER_1 12
-#define WORKING_SET_READ_REFAULT_FILE_PAGE_USER 13
-#define WORKING_SET_ACCESS_REFAULT_FILE_PAGE_USER 14
-#define WORKING_SET_WRITE_REFAULT_FILE_PAGE_USER 15
-#define DIRTY_FILE_PAGE_USER_RECLAIMING 16
+#define ACCESS_MAPPED_FILE_PAGE_USER_1 7
+#define ACCESS_MAPPED_FILE_PAGE_USER_2 8
+#define ACCESS_MAPPED_EXEC_CLEAN_FILE_PAGE_USER_1 9
+#define EXT_READ_ACCESS_MAPPED_EXEC_CLEAN_FILE_PAGE_USER_2 10
+#define READ_ACCESS_MAPPED_CLEAN_FILE_PAGE_USER_1 11
+#define EXT_READ_ACCESS_MAPPED_CLEAN_FILE_PAGE_USER_3 12
+#define EXT_READ_ACCESS_MAPPED_CLEAN_FILE_PAGE_USER_1 13
+#define WORKING_SET_READ_REFAULT_FILE_PAGE_USER 14
+#define WORKING_SET_ACCESS_REFAULT_FILE_PAGE_USER 15
+#define WORKING_SET_WRITE_REFAULT_FILE_PAGE_USER 16
+#define DIRTY_FILE_PAGE_USER_RECLAIMING 17
 #define MIN_MODE READ_CLEAN_FILE_PAGE_USER_1
 #define MAX_MODE DIRTY_FILE_PAGE_USER_RECLAIMING
 
@@ -82,7 +83,8 @@ const char *experiment_strings[] =
     "read executable mapped clean file page once, and print pageflags",
     "access read-only mapped clean file page once, trigger vmscan and print pageflags",
     "access read-only mapped clean file page twice, trigger vmscan and print pageflags",
-    "access read-write mapped file page twice, trigger vmscan and print pageflags",
+    "access (write) read-write mapped file page once, trigger vmscan and print pageflags",
+    "access (write) read-write mapped file page twice, trigger vmscan and print pageflags",
     "access executable mapped clean file page once, trigger vmscan and print pageflags",
     "read (2x) + access executable mapped clean file page, read (2x) + access a read-only mapped clean file page, evict read-only page and print pageflags",
     "read + access read-only mapped clean file page once, trigger vmscan and print pageflags",
@@ -366,6 +368,21 @@ int main(int argc, char *argv[])
       goto error;
     }
     evictPage(&eviction_file_mapping, read_victim2_addr);
+    // trigger lru_add_drain() by calling posix_fadvice
+    posix_fadvise(eviction_file_mapping.fd_, 0, PAGE_SIZE, POSIX_FADV_DONTNEED);
+  }
+  else if(mode == ACCESS_MAPPED_FILE_PAGE_USER_1)
+  {
+    DEBUG_PRINT(("Executing experiment: %i\n", mode));
+    // first access
+    *write_target_addr = 0xaa;
+    // victim page
+    if(pread(test_read_file_mapping.fd_, (void *) &tmp, 1, TEST_FILE_VICTIM_PAGE * PAGE_SIZE) != 1)
+    {
+      printf("Error (%s) at pread\n", strerror(errno));
+      goto error;
+    }
+    evictPage(&eviction_file_mapping, read_victim_addr);
     // trigger lru_add_drain() by calling posix_fadvice
     posix_fadvise(eviction_file_mapping.fd_, 0, PAGE_SIZE, POSIX_FADV_DONTNEED);
   }
