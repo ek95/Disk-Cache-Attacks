@@ -27,3 +27,6 @@ __pycache__/
 *.o
 raw_trace.txt
 *.csv
+*.exe
+*.dll
+*.a
