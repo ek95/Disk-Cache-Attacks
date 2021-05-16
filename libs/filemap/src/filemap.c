@@ -720,7 +720,8 @@ int changeFcStateSource(int source)
 int adviseFileUsage(FileMapping *file_mapping, size_t offset, size_t len, int advice)
 {
   // whole file
-  if(offset == 0 && len == 0) {
+  if (offset == 0 && len == 0)
+  {
     len = file_mapping->size_;
   }
 
@@ -734,28 +735,24 @@ int adviseFileUsage(FileMapping *file_mapping, size_t offset, size_t len, int ad
   if (len > file_size_cache ||
       offset > file_size_cache - len)
   {
-    printf("fail\n");
     return -1;
   }
 
-  if(adviseFileUsageIntern(file_mapping, offset, len, advice) == -1) {
-    printf("fail2\n");
-  }
-  //return adviseFileUsageIntern(file_mapping, offset, len, advice);
+  return adviseFileUsageIntern(file_mapping, offset, len, advice);
 }
 
 int getCacheStatusFile(FileMapping *file_mapping)
 {
-  if (file_mapping->page_cache_status_ == NULL)
+  if (file_mapping->pages_cache_status_ == NULL)
   {
-    file_mapping->page_cache_status_ = malloc(sizeof(uint8_t) * file_mapping->size_pages_);
-    if (file_mapping->page_cache_status_ == NULL)
+    file_mapping->pages_cache_status_ = malloc(sizeof(uint8_t) * file_mapping->size_pages_);
+    if (file_mapping->pages_cache_status_ == NULL)
     {
       return -1;
     }
   }
 
-  return FC_STATE_FN(file_mapping, 0, file_mapping->size_pages_, file_mapping->page_cache_status_);
+  return FC_STATE_FN(file_mapping, 0, file_mapping->size_pages_ * PAGE_SIZE, file_mapping->pages_cache_status_);
 }
 
 int getCacheStatusPageFile(FileMapping *file_mapping, size_t offset, uint8_t *status)
@@ -769,8 +766,8 @@ void closeMappingOnly(void *arg)
 
   closeMappingOnlyIntern(file_mapping);
   // free state also here, remapping might update size
-  free(file_mapping->page_cache_status_);
-  file_mapping->page_cache_status_ = NULL;
+  free(file_mapping->pages_cache_status_);
+  file_mapping->pages_cache_status_ = NULL;
 }
 
 void closeFileMapping(void *arg)

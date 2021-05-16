@@ -68,7 +68,7 @@ typedef struct _FileMapping_
     void *addr_;
     size_t size_;
     size_t size_pages_;
-    uint8_t *page_cache_status_;
+    uint8_t *pages_cache_status_;
     // architecture dependent
     struct _FileMappingInternal_ internal_;
 } FileMapping;

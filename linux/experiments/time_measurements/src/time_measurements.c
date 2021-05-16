@@ -112,7 +112,7 @@ int main(int argc, char *argv[]) {
 	
 
 	// map target
-	if (mapFile(&target_mapping, argv[TARGET_FILE_ARG], O_RDONLY, PROT_READ /*| PROT_EXEC*/, MAP_PRIVATE) != 0) {
+	if (mapFile(&target_mapping, argv[TARGET_FILE_ARG], FILE_ACCESS_READ, MAPPING_ACCESS_READ | MAPPING_SHARED) != 0) {
         printf("Error (%s) at mapFile for: %s ...\n", strerror(errno), argv[TARGET_FILE_ARG]);
         goto error;
     }
@@ -134,10 +134,9 @@ int main(int argc, char *argv[]) {
 		printf("Flushing target page...\n");
 		page_status = 0;
 		do {
-			posix_fadvise(target_mapping.fd_, target_page * PAGE_SIZE, PAGE_SIZE, POSIX_FADV_DONTNEED);
-			madvise(target_mapping.addr_, target_mapping.size_, MADV_DONTNEED);
+      adviseFileUsage(&target_mapping, target_page * PAGE_SIZE, PAGE_SIZE, USAGE_DONTNEED);
 			sched_yield();
-			mincore(addr, PAGE_SIZE, &page_status);
+      getCacheStatusPageFile(&target_mapping, target_page * PAGE_SIZE, &page_status);
 		} while(page_status & 1);
 		printf("Done...\n");
 	}
@@ -147,7 +146,7 @@ int main(int argc, char *argv[]) {
 		do {
 			tmp = *((uint8_t *) addr);
 			sched_yield();
-			mincore(addr, PAGE_SIZE, &page_status);
+      getCacheStatusPageFile(&target_mapping, target_page * PAGE_SIZE, &page_status);
 		} while(!(page_status & 1));
 		printf("Done...\n");
 	}
@@ -170,7 +169,7 @@ int main(int argc, char *argv[]) {
 #else	
 		// tsc version
 		TSC_BENCH_START(cycles_start);
-		ret = pread(target_mapping.fd_, (void *) &tmp, 1, target_page * PAGE_SIZE);
+		ret = pread(target_mapping.internal_.fd_, (void *) &tmp, 1, target_page * PAGE_SIZE);
 		//ret = mincore(addr, PAGE_SIZE, &page_status);
 		TSC_BENCH_STOP(cycles_end);
 		if(ret != 1) {

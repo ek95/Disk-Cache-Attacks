@@ -27,7 +27,8 @@ add_subdirectory(../../../libs/filemap lib/filemap)
 include_directories(../../libs/pageflags/src)
 add_subdirectory(../../libs/pageflags lib/pageflags)
 include_directories(../../../libs/tsc_bench/src)
-add_subdirectory(../../../libs/tsc_bench lib/tsc_bench)
+# already built by filemap
+#add_subdirectory(../../../libs/tsc_bench lib/tsc_bench)
 
 # main project
 add_subdirectory(src)
