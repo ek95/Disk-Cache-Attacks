@@ -23,6 +23,10 @@ set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
+# external libs
+include_directories(../tsc_bench/src)
+add_subdirectory(../tsc_bench lib/tsc_bench)
+
 # enable ctest
 enable_testing()
 

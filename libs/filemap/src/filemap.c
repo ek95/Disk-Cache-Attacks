@@ -3,6 +3,7 @@
 #define _WIN32_WINNT 0x0602
 
 #include "filemap.h"
+#include "tsc_bench.h"
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -11,6 +12,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <linux/limits.h>
+#include <sched.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <sys/statvfs.h>
@@ -23,11 +25,12 @@
 
 // forward declarations
 #ifdef __linux
-int doFcStateMincore(FileMapping *file_mapping, size_t offset, size_t len, uint8_t *vec);
-int doFcStatePreadV2(FileMapping *file_mapping, size_t offset, size_t len, uint8_t *vec);
+static int doFcStateMincore(FileMapping *file_mapping, size_t offset, size_t len, uint8_t *vec);
+static int doFcStatePreadV2(FileMapping *file_mapping, size_t offset, size_t len, uint8_t *vec);
 #elif defined(_WIN32)
-int doFcStateQueryWorkingSetEx(FileMapping *file_mapping, size_t offset, size_t len, uint8_t *vec);
+static int doFcStateQueryWorkingSetEx(FileMapping *file_mapping, size_t offset, size_t len, uint8_t *vec);
 #endif
+static int doFcStateAccess(FileMapping *file_mapping, size_t offset, size_t len, uint8_t *vec);
 
 // globals
 static size_t PAGE_SIZE = 0;
@@ -38,7 +41,7 @@ static FcStateFn FC_STATE_FN = doFcStateQueryWorkingSetEx;
 #endif
 
 #ifdef __linux
-static void initInternalFileMapping(struct _FileMappingInternal_ *internal)
+static void initFileMappingInternal(struct _FileMappingInternal_ *internal)
 {
   // fetch system PAGE_SIZE if not done alreay
   if (PAGE_SIZE == 0)
@@ -49,29 +52,7 @@ static void initInternalFileMapping(struct _FileMappingInternal_ *internal)
 
   internal->fd_ = -1;
 }
-#elif defined(_WIN32)
-static void initInternalFileMapping(struct _FileMappingInternal_ *internal)
-{
-  // fetch system PAGE_SIZE if not done alreay
-  if (PAGE_SIZE == 0)
-  {
-    SYSTEM_INFO sys_info;
-    GetSystemInfo(&sys_info);
-    PAGE_SIZE = sys_info.dwPageSize;
-  }
 
-  internal->file_handle_ = INVALID_HANDLE_VALUE;
-  internal->mapping_handle_ = INVALID_HANDLE_VALUE;
-}
-#endif
-
-void initFileMapping(FileMapping *file_mapping)
-{
-  memset(file_mapping, 0, sizeof(FileMapping));
-  initInternalFileMapping(&file_mapping->internal_);
-}
-
-#ifdef __linux
 static inline int fileFlags2openFlags(int file_flags)
 {
   int flags = 0;
@@ -154,8 +135,6 @@ error:
 // advice values directly compatible with linux
 static int adviseFileUsageIntern(FileMapping *file_mapping, size_t offset, size_t len, int advice)
 {
-  int ret = 0;
-
   // no file descriptor
   if (file_mapping->internal_.fd_ == -1)
   {
@@ -309,6 +288,12 @@ int createRandomFile(char *filename, size_t size)
 
 static int doFcStateMincore(FileMapping *file_mapping, size_t offset, size_t len, uint8_t *vec)
 {
+  // no mapping
+  if (file_mapping->addr_ == NULL)
+  {
+    return -1;
+  }
+
   return mincore((uint8_t *)file_mapping->addr_ + offset, len, vec);
 }
 
@@ -320,6 +305,12 @@ static int doFcStatePreadV2(FileMapping *file_mapping, size_t offset, size_t len
   struct iovec io_range = {0};
   io_range.iov_base = (void *)&tmp;
   io_range.iov_len = sizeof(tmp);
+
+  // no mapping
+  if (file_mapping->internal_.fd_ == -1)
+  {
+    return -1;
+  }
 
   for (size_t current_ofs = offset; current_ofs < (offset + len); current_ofs += PAGE_SIZE, vec++)
   {
@@ -344,7 +335,7 @@ static int doFcStatePreadV2(FileMapping *file_mapping, size_t offset, size_t len
   return 0;
 }
 
-int changeFcStateSource(int source)
+static int changeFcStateSourceIntern(int source)
 {
   if (source == FC_SOURCE_MINCORE)
   {
@@ -360,6 +351,20 @@ int changeFcStateSource(int source)
   return -1;
 }
 #elif defined(_WIN32)
+static void initFileMappingInternal(struct _FileMappingInternal_ *internal)
+{
+  // fetch system PAGE_SIZE if not done alreay
+  if (PAGE_SIZE == 0)
+  {
+    SYSTEM_INFO sys_info;
+    GetSystemInfo(&sys_info);
+    PAGE_SIZE = sys_info.dwPageSize;
+  }
+
+  internal->file_handle_ = INVALID_HANDLE_VALUE;
+  internal->mapping_handle_ = INVALID_HANDLE_VALUE;
+}
+
 static inline DWORD fileFlags2createFileAccess(int file_flags)
 {
   DWORD flags = 0;
@@ -374,8 +379,8 @@ static inline DWORD fileFlags2createFileFlags(int file_flags)
 {
   DWORD flags = 0;
 
-  flags |= (mapping_flags & FILE_USAGE_RANDOM) ? FILE_FLAG_RANDOM_ACCESS : 0;
-  flags |= (mapping_flags & FILE_USAGE_SEQUENTIAL) ? FILE_FLAG_SEQUENTIAL_SCAN : 0;
+  flags |= (file_flags & FILE_USAGE_RANDOM) ? FILE_FLAG_RANDOM_ACCESS : 0;
+  flags |= (file_flags & FILE_USAGE_SEQUENTIAL) ? FILE_FLAG_SEQUENTIAL_SCAN : 0;
 
   return flags;
 }
@@ -405,7 +410,7 @@ static inline DWORD mappingFlags2createFileMappingProtection(int mapping_flags)
     }
     else
     {
-      flags = PAGE_EXECUTE_READ;
+      flags = PAGE_READWRITE;
     }
   }
 
@@ -418,9 +423,10 @@ static inline DWORD mappingFlags2mapViewOfFileAccess(int mapping_flags)
 {
   DWORD flags = 0;
 
-  flags |= (mapping_flags & FILE_ACCESS_READ) ? FILE_MAP_READ : 0;
-  flags |= (mapping_flags & FILE_ACCESS_WRITE) ? FILE_MAP_WRITE : 0;
-  flags |= (mapping_flags & FILE_ACCESS_EXECUTE) ? FILE_MAP_EXECUTE : 0;
+  flags |= (mapping_flags & MAPPING_ACCESS_READ) ? FILE_MAP_READ : 0;
+  flags |= (mapping_flags & MAPPING_ACCESS_WRITE) ? FILE_MAP_WRITE : 0;
+  flags |= (mapping_flags & MAPPING_ACCESS_EXECUTE) ? FILE_MAP_EXECUTE : 0;
+  flags |= (mapping_flags & MAPPING_PRIVATE) ? FILE_MAP_COPY : 0;
   flags |= (mapping_flags & MAPPING_LARGE_PAGES) ? FILE_MAP_LARGE_PAGES : 0;
 
   return flags;
@@ -433,6 +439,8 @@ int mapFile(FileMapping *file_mapping, const char *file_path, int file_flags, in
   // open file (if not already done)
   if (file_mapping->intern_.file_handle_ == INVALID_HANDLE_VALUE)
   {
+    // NOTE for attack it is not necessary that multiple processes open the same file for write access
+    //  -> FILE_SHARE_READ
     file_mapping->intern_.file_handle_ = CreateFileA(file_name, fileFlags2createFileAccess(file_flags),
                                                      FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL | fileFlags2createFileFlags(file_flags), NULL);
     if (file_mapping->intern_.file_handle_ == INVALID_HANDLE_VALUE)
@@ -603,6 +611,12 @@ static int doFcStateQueryWorkingSetEx(FileMapping *file_mapping, size_t offset, 
   size_t len_pages = len / PAGE_SIZE;
   volatile uint8_t tmp;
 
+  // no mapping
+  if (file_mapping->addr_ == NULL)
+  {
+    return -1;
+  }
+
   ws_infos = malloc(sizeof(PSAPI_WORKING_SET_EX_INFORMATION) * len_pages);
   if (ws_infos == NULL)
   {
@@ -610,38 +624,39 @@ static int doFcStateQueryWorkingSetEx(FileMapping *file_mapping, size_t offset, 
   }
 
   // prepare addresses
-  // fetch virtual pages (must be in ws for querying)
   for (size_t p = 0; p < len_pages; p++)
+  {
     uint8_t *addr = (uint8_t *)file_mapping->addr_ + (offset_pages + p) * PAGE_SIZE;
-  ws_infos[p].VirtualAddress = addr;
-  tmp = *addr;
-}
+    ws_infos[p].VirtualAddress = addr;
+    // fetch virtual pages (must be resident in ws for check)
+    tmp = *addr;
+  }
 
-// query
-if (QueryWorkingSetEx(GetCurrentProcess(), ws_infos, sizeof(PSAPI_WORKING_SET_EX_INFORMATION) * len_pages) == 0)
-{
-  free(ws_infos);
-  return -1;
-}
-
-// post process
-memset(vec, 0, sizeof(uint8_t) * len_pages);
-for (size_t p = 0; p < len_pages; p++)
-{
-  uint8_t *addr = (uint8_t *)file_mapping->addr_ + (offset_pages + p) * PAGE_SIZE;
-  if (!ws_infos[p].VirtualAttributes.Valid || ws_infos[p].VirtualAttributes.ShareCount < 2)
+  // query
+  if (QueryWorkingSetEx(GetCurrentProcess(), ws_infos, sizeof(PSAPI_WORKING_SET_EX_INFORMATION) * len_pages) == 0)
   {
     free(ws_infos);
     return -1;
   }
-  vec[p] = ws_infos[p].VirtualAttributes.ShareCount - 1;
+
+  // post process
+  memset(vec, 0, sizeof(uint8_t) * len_pages);
+  for (size_t p = 0; p < len_pages; p++)
+  {
+    uint8_t *addr = (uint8_t *)file_mapping->addr_ + (offset_pages + p) * PAGE_SIZE;
+    if (!ws_infos[p].VirtualAttributes.Valid || ws_infos[p].VirtualAttributes.ShareCount < 1)
+    {
+      free(ws_infos);
+      return -1;
+    }
+    vec[p] = ws_infos[p].VirtualAttributes.ShareCount - 1;
+  }
+
+  free(ws_infos);
+  return 0;
 }
 
-free(ws_infos);
-return 0;
-}
-
-int changeFcStateSource(int source)
+static int changeFcStateSourceIntern(int source)
 {
   if (source == FC_SOURCE_QUERY_WORKING_SET)
   {
@@ -653,33 +668,84 @@ int changeFcStateSource(int source)
 }
 #endif
 
-
-int adviseFileUsage(FileMapping *file_mapping, size_t offset, size_t len, int advice)
+void initFileMapping(FileMapping *file_mapping)
 {
-  // round offset down to full pages
-  offset = offset / PAGE_SIZE * PAGE_SIZE;
-  // round size up to full pages
-  len = (len + PAGE_SIZE - 1) / PAGE_SIZE;
-
-  // manual range check
-  if (len > file_mapping->size_ ||
-      offset > file_mapping->size_ - len)
-  {
-    return -1;
-  }
-
-  return adviseFileUsageIntern(file_mapping, offset, len, advice);
+  memset(file_mapping, 0, sizeof(FileMapping));
+  initFileMappingInternal(&file_mapping->internal_);
 }
 
-
-int getCacheStatusFile(FileMapping *file_mapping)
+static int doFcStateAccess(FileMapping *file_mapping, size_t offset, size_t length, unsigned char *vec)
 {
+  uint8_t *current_addr = (uint8_t *)file_mapping->addr_ + offset;
+  uint8_t *end_addr = current_addr + length;
+  volatile uint8_t tmp = 0;
+  (void)tmp;
+  uint64_t start_cycle = 0, end_cycle = 0;
+
   // no mapping
   if (file_mapping->addr_ == NULL)
   {
     return -1;
   }
 
+  for (; current_addr < end_addr; current_addr += PAGE_SIZE, vec++)
+  {
+#ifdef __linux
+    sched_yield();
+#elif defined(_WIN32)
+    SwitchToThread();
+#endif
+
+    TSC_BENCH_START(start_cycle);
+    tmp = *current_addr;
+    TSC_BENCH_STOP(end_cycle);
+    uint64_t access_time = tsc_bench_get_runtime_ns(start_cycle, end_cycle);
+    *vec = access_time < DISK_ACCESS_THRESHOLD_NS;
+  }
+
+  return 0;
+}
+
+int changeFcStateSource(int source)
+{
+  if (source == FC_SOURCE_ACCESS)
+  {
+    FC_STATE_FN = doFcStateAccess;
+    return 0;
+  }
+
+  return changeFcStateSourceIntern(source);
+}
+
+int adviseFileUsage(FileMapping *file_mapping, size_t offset, size_t len, int advice)
+{
+  // whole file
+  if(offset == 0 && len == 0) {
+    len = file_mapping->size_;
+  }
+
+  // round offset down to full pages
+  offset = (offset / PAGE_SIZE) * PAGE_SIZE;
+  // round size up to full pages
+  len = (len + PAGE_SIZE - 1) / PAGE_SIZE * PAGE_SIZE;
+
+  // manual range check
+  size_t file_size_cache = file_mapping->size_pages_ * PAGE_SIZE;
+  if (len > file_size_cache ||
+      offset > file_size_cache - len)
+  {
+    printf("fail\n");
+    return -1;
+  }
+
+  if(adviseFileUsageIntern(file_mapping, offset, len, advice) == -1) {
+    printf("fail2\n");
+  }
+  //return adviseFileUsageIntern(file_mapping, offset, len, advice);
+}
+
+int getCacheStatusFile(FileMapping *file_mapping)
+{
   if (file_mapping->page_cache_status_ == NULL)
   {
     file_mapping->page_cache_status_ = malloc(sizeof(uint8_t) * file_mapping->size_pages_);
@@ -689,20 +755,13 @@ int getCacheStatusFile(FileMapping *file_mapping)
     }
   }
 
-  return FC_STATE_FN(file_mapping, 0, PAGE_SIZE, file_mapping->page_cache_status_);
+  return FC_STATE_FN(file_mapping, 0, file_mapping->size_pages_, file_mapping->page_cache_status_);
 }
 
 int getCacheStatusPageFile(FileMapping *file_mapping, size_t offset, uint8_t *status)
 {
-  // no mapping
-  if (file_mapping->addr_ == NULL)
-  {
-    return -1;
-  }
-
   return FC_STATE_FN(file_mapping, offset, PAGE_SIZE, status);
 }
-
 
 void closeMappingOnly(void *arg)
 {
@@ -716,8 +775,6 @@ void closeMappingOnly(void *arg)
 
 void closeFileMapping(void *arg)
 {
-  FileMapping *file_mapping = arg;
-
   closeMappingOnly(arg);
   closeFileMappingIntern(arg);
 }

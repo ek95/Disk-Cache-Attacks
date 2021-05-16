@@ -1,3 +1,17 @@
+/* evaluated on 5.1.3
+ *
+ * experiments not always show correct results after first run
+ * (depends on the internal state of the memory manager)
+ * better run multiple times and take the majority result (e.g. 5 times)
+ * 
+ * note that experiment 17 is especially unreliable as the kernels 
+ * background flusher threads also write back dirty pages
+ * (changing the configuration of writeback using sysctl does not do
+ *  much) 
+ * so you might have to run it often to see the memory reclaimer actually
+ * triggering the I/O request 
+ * in addition the sampling of the pageflags might also not be ideal */
+
 #include <stdio.h>
 #include <string.h>
 #include <stdint.h>
@@ -19,6 +33,7 @@
 #define MODE_ARG 1
 
 #define EVICTION_FILENAME "eviction.ram"
+#define EVICTION2_FILENAME "eviction2.ram"
 
 #define TEST_EXEC_FILE_PATH "test.so"
 #define TEST_READ_FILE_PATH "test.dat"
@@ -106,7 +121,7 @@ int startPageflagSampler(struct PageflagSamplerArg *sampler);
 int stopPageflagSampler(struct PageflagSamplerArg *sampler);
 void *pageflagSampler(void *arg);
 void waitUntilKswapd0Sleeps(); 
-void evictPage(FileMapping *eviction_file_mapping, void *victim_addr);
+void evictPage(FileMapping *eviction_file_mapping, void *victim_addr, int flush_active);
 void flushExclusivePage(FileMapping *mapping, size_t page);
 void usageError(char *program_name);
 
@@ -116,7 +131,7 @@ int main(int argc, char *argv[])
   int ret = 0;
   int mode = 0;
   FileMapping test_read_file_mapping, test_exec_file_mapping, test_write_file_mapping;
-  FileMapping eviction_file_mapping;
+  FileMapping eviction_file_mapping, eviction2_file_mapping;
   PageFlagsFd pageflags_fd;
   struct PageflagSamplerArg sampler_arg = {
     .pageflags_fd_ = &pageflags_fd, 
@@ -134,6 +149,8 @@ int main(int argc, char *argv[])
   initFileMapping(&test_exec_file_mapping);
   initFileMapping(&test_write_file_mapping);
   initFileMapping(&eviction_file_mapping);
+  initFileMapping(&eviction2_file_mapping);
+
 
 
   if(argc != ARG_COUNT)
@@ -170,6 +187,7 @@ int main(int argc, char *argv[])
     printf("Error (%s) at openPageFlags\n", strerror(errno));
     goto error;
   }
+  
 
   // create test file    
   if(createRandomFile(TEST_READ_FILE_PATH, TEST_FILE_SIZE) != 0)
@@ -192,19 +210,21 @@ int main(int argc, char *argv[])
 
 
   // map test file non-executable
-  if(mapFile(&test_read_file_mapping, TEST_READ_FILE_PATH, O_RDONLY, PROT_READ, MAP_SHARED) != 0)
+  if(mapFile(&test_read_file_mapping, TEST_READ_FILE_PATH, FILE_ACCESS_READ, MAPPING_ACCESS_READ | MAPPING_SHARED) != 0)
   {
       printf("Error (%s) at mapFile for: %s ...\n", strerror(errno), TEST_READ_FILE_PATH);
       goto error;
   }  
   // map test file executable
-  if(mapFile(&test_exec_file_mapping, TEST_EXEC_FILE_PATH, O_RDONLY, PROT_READ | PROT_EXEC, MAP_SHARED) != 0)
+  if(mapFile(&test_exec_file_mapping, TEST_EXEC_FILE_PATH, FILE_ACCESS_READ, MAPPING_ACCESS_READ | 
+    MAPPING_ACCESS_EXECUTE | MAPPING_SHARED) != 0)
   {
         printf("Error (%s) at mapFile for: %s ...\n", strerror(errno), TEST_EXEC_FILE_PATH);
         goto error;
   } 
-  // map test file executable
-  if(mapFile(&test_write_file_mapping, TEST_WRITE_FILE_PATH, O_RDWR, PROT_READ | PROT_WRITE, MAP_SHARED) != 0)
+  // map test file writeable
+  if(mapFile(&test_write_file_mapping, TEST_WRITE_FILE_PATH, FILE_ACCESS_READ | FILE_ACCESS_WRITE, MAPPING_ACCESS_READ |
+    MAPPING_ACCESS_WRITE | MAPPING_SHARED) != 0)
   {
         printf("Error (%s) at mapFile for: %s ...\n", strerror(errno), TEST_WRITE_FILE_PATH);
         goto error;
@@ -233,32 +253,53 @@ int main(int argc, char *argv[])
   flushExclusivePage(&test_write_file_mapping, TEST_FILE_TARGET_PAGE);
   flushExclusivePage(&test_write_file_mapping, TEST_FILE_VICTIM_PAGE);
 
+
   // advise no readahead
-  posix_fadvise(test_read_file_mapping.fd_, 0, 0, POSIX_FADV_RANDOM);
-  posix_fadvise(test_exec_file_mapping.fd_, 0, 0, POSIX_FADV_RANDOM);
-  posix_fadvise(test_write_file_mapping.fd_, 0, 0, POSIX_FADV_RANDOM);
+  adviseFileUsage(&test_read_file_mapping, 0, 0, USAGE_RANDOM);
+  adviseFileUsage(&test_exec_file_mapping, 0, 0, USAGE_RANDOM);
+  adviseFileUsage(&test_write_file_mapping, 0, 0, USAGE_RANDOM);
 
 
   // create eviction file if not exists already
-  if(createRandomFile(EVICTION_FILENAME, system_info.totalram) != 0)
+  // double of the RAM size to allow two evictions which does not influence each other
+  if(createRandomFile(EVICTION_FILENAME, 2 * system_info.totalram) != 0)
   {
       printf("Error(%s) at createRandomFile...\n", strerror(errno));
       goto error;
   }
   // map eviction memory
-  if(mapFile(&eviction_file_mapping, EVICTION_FILENAME, O_RDONLY, PROT_READ | PROT_EXEC, MAP_PRIVATE) != 0)
+  if(mapFile(&eviction_file_mapping, EVICTION_FILENAME, FILE_ACCESS_READ, MAPPING_ACCESS_READ | 
+    MAPPING_ACCESS_EXECUTE | MAPPING_SHARED) != 0)
   {
       printf("Error (%s) at mapFile for: %s ...\n", strerror(errno), EVICTION_FILENAME);
       goto error;
   } 
-  
-  // cycle one page through the whole LRU, avoids effects from shadow entries in the later experiments
-  // run until starts to evict form itsself
-  tmp = *((uint8_t *) eviction_file_mapping.addr_);
-  evictPage(&eviction_file_mapping, eviction_file_mapping.addr_);
-  posix_fadvise(eviction_file_mapping.fd_, 0, 0, POSIX_FADV_DONTNEED);  
-  posix_fadvise(eviction_file_mapping.fd_, 0, 0, POSIX_FADV_RANDOM); 
+  adviseFileUsage(&eviction_file_mapping, 0, 0, USAGE_RANDOM);
 
+  // create second eviction file if not exists already
+  if(createRandomFile(EVICTION2_FILENAME, 2 * system_info.totalram) != 0)
+  {
+      printf("Error(%s) at createRandomFile...\n", strerror(errno));
+      goto error;
+  }
+  // map second eviction memory
+  if(mapFile(&eviction2_file_mapping, EVICTION2_FILENAME, FILE_ACCESS_READ, MAPPING_ACCESS_READ | 
+    MAPPING_ACCESS_EXECUTE | MAPPING_SHARED) != 0)
+  {
+      printf("Error (%s) at mapFile for: %s ...\n", strerror(errno), EVICTION_FILENAME);
+      goto error;
+  } 
+  adviseFileUsage(&eviction2_file_mapping, 0, 0, USAGE_RANDOM);
+  // one full run through eviction file 2 to evict leftover pages from previous attempts
+  // + avoid working set refaults of previous pages 
+  // double the size of ram -> number of activations + evictions is so high previous pages
+  // could never have been able to stay in RAM
+  for(size_t p = 0; p < eviction2_file_mapping.size_pages_; p++)
+  {
+   tmp = *((uint8_t *) eviction2_file_mapping.addr_ + p * PAGE_SIZE);
+  }
+  adviseFileUsage(&eviction2_file_mapping, 0, 0, USAGE_DONTNEED);
+  waitUntilKswapd0Sleeps();
 
   // experiments
   printf("Running experiment %s:\n", experiment_strings[mode]);
@@ -266,67 +307,67 @@ int main(int argc, char *argv[])
   {
     DEBUG_PRINT(("Executing experiment: %i\n", mode));
     // first read access 
-    if(pread(test_read_file_mapping.fd_, (void *) &tmp, 1, TEST_FILE_TARGET_PAGE * PAGE_SIZE) != 1)
+    if(pread(test_read_file_mapping.internal_.fd_, (void *) &tmp, 1, TEST_FILE_TARGET_PAGE * PAGE_SIZE) != 1)
     {
       printf("Error (%s) at pread\n", strerror(errno));
       goto error;
     }
     // trigger lru_add_drain() by calling posix_fadvice
-    posix_fadvise(eviction_file_mapping.fd_, 0, PAGE_SIZE, POSIX_FADV_DONTNEED);
+    posix_fadvise(eviction_file_mapping.internal_.fd_, 0, PAGE_SIZE, POSIX_FADV_DONTNEED);
   }
   else if(mode == READ_CLEAN_FILE_PAGE_USER_2)
   {
     DEBUG_PRINT(("Executing experiment: %i\n", mode));
     // two read accesses
-    if(pread(test_read_file_mapping.fd_, (void *) &tmp, 1, TEST_FILE_TARGET_PAGE * PAGE_SIZE) != 1 ||
-       pread(test_read_file_mapping.fd_, (void *) &tmp, 1, TEST_FILE_TARGET_PAGE * PAGE_SIZE) != 1)
+    if(pread(test_read_file_mapping.internal_.fd_, (void *) &tmp, 1, TEST_FILE_TARGET_PAGE * PAGE_SIZE) != 1 ||
+       pread(test_read_file_mapping.internal_.fd_, (void *) &tmp, 1, TEST_FILE_TARGET_PAGE * PAGE_SIZE) != 1)
     {
       printf("Error (%s) at pread\n", strerror(errno));
       goto error;
     }
     // trigger lru_add_drain() by calling posix_fadvice
-    posix_fadvise(eviction_file_mapping.fd_, 0, PAGE_SIZE, POSIX_FADV_DONTNEED);
+    posix_fadvise(eviction_file_mapping.internal_.fd_, 0, PAGE_SIZE, POSIX_FADV_DONTNEED);
   }
   else if(mode == READ_CLEAN_FILE_PAGE_USER_3)
   {
     DEBUG_PRINT(("Executing experiment: %i\n", mode));
     // three read accesses
-    if(pread(test_read_file_mapping.fd_, (void *) &tmp, 1, TEST_FILE_TARGET_PAGE * PAGE_SIZE) != 1 ||
-       pread(test_read_file_mapping.fd_, (void *) &tmp, 1, TEST_FILE_TARGET_PAGE * PAGE_SIZE) != 1 ||
-       pread(test_read_file_mapping.fd_, (void *) &tmp, 1, TEST_FILE_TARGET_PAGE * PAGE_SIZE) != 1)
+    if(pread(test_read_file_mapping.internal_.fd_, (void *) &tmp, 1, TEST_FILE_TARGET_PAGE * PAGE_SIZE) != 1 ||
+       pread(test_read_file_mapping.internal_.fd_, (void *) &tmp, 1, TEST_FILE_TARGET_PAGE * PAGE_SIZE) != 1 ||
+       pread(test_read_file_mapping.internal_.fd_, (void *) &tmp, 1, TEST_FILE_TARGET_PAGE * PAGE_SIZE) != 1)
     {
       printf("Error (%s) at pread\n", strerror(errno));
       goto error;
     }
     // trigger lru_add_drain() by calling posix_fadvice
-    posix_fadvise(eviction_file_mapping.fd_, 0, PAGE_SIZE, POSIX_FADV_DONTNEED);
+    posix_fadvise(eviction_file_mapping.internal_.fd_, 0, PAGE_SIZE, POSIX_FADV_DONTNEED);
   }
   else if(mode == WRITE_FILE_PAGE_USER_3)
   {
     DEBUG_PRINT(("Executing experiment: %i\n", mode));
     // three read accesses
     tmp = 0xff;
-    if(pwrite(test_write_file_mapping.fd_, (void *) &tmp, 1, TEST_FILE_TARGET_PAGE * PAGE_SIZE) != 1 ||
-       pwrite(test_write_file_mapping.fd_, (void *) &tmp, 1, TEST_FILE_TARGET_PAGE * PAGE_SIZE) != 1 ||
-       pwrite(test_write_file_mapping.fd_, (void *) &tmp, 1, TEST_FILE_TARGET_PAGE * PAGE_SIZE) != 1)
+    if(pwrite(test_write_file_mapping.internal_.fd_, (void *) &tmp, 1, TEST_FILE_TARGET_PAGE * PAGE_SIZE) != 1 ||
+       pwrite(test_write_file_mapping.internal_.fd_, (void *) &tmp, 1, TEST_FILE_TARGET_PAGE * PAGE_SIZE) != 1 ||
+       pwrite(test_write_file_mapping.internal_.fd_, (void *) &tmp, 1, TEST_FILE_TARGET_PAGE * PAGE_SIZE) != 1)
     {
       printf("Error (%s) at pread\n", strerror(errno));
       goto error;
     }
     // trigger lru_add_drain() by calling posix_fadvice
-    posix_fadvise(eviction_file_mapping.fd_, 0, PAGE_SIZE, POSIX_FADV_DONTNEED);
+    posix_fadvise(eviction_file_mapping.internal_.fd_, 0, PAGE_SIZE, POSIX_FADV_DONTNEED);
   }
   else if(mode == READ_MAPPED_EXEC_CLEAN_FILE_PAGE_USER_1)
   {
     DEBUG_PRINT(("Executing experiment: %i\n", mode));
     // first read access 
-    if(pread(test_exec_file_mapping.fd_, (void *) &tmp, 1, TEST_FILE_TARGET_PAGE * PAGE_SIZE) != 1)
+    if(pread(test_exec_file_mapping.internal_.fd_, (void *) &tmp, 1, TEST_FILE_TARGET_PAGE * PAGE_SIZE) != 1)
     {
       printf("Error (%s) at pread\n", strerror(errno));
       goto error;
     }
     // trigger lru_add_drain() by calling posix_fadvice
-    posix_fadvise(eviction_file_mapping.fd_, 0, PAGE_SIZE, POSIX_FADV_DONTNEED);
+    posix_fadvise(eviction_file_mapping.internal_.fd_, 0, PAGE_SIZE, POSIX_FADV_DONTNEED);
   }
   else if(mode == ACCESS_MAPPED_CLEAN_FILE_PAGE_USER_1)
   {
@@ -335,14 +376,14 @@ int main(int argc, char *argv[])
     tmp = *read_target_addr;
     
     // victim page
-    if(pread(test_read_file_mapping.fd_, (void *) &tmp, 1, TEST_FILE_VICTIM_PAGE * PAGE_SIZE) != 1)
+    if(pread(test_read_file_mapping.internal_.fd_, (void *) &tmp, 1, TEST_FILE_VICTIM_PAGE * PAGE_SIZE) != 1)
     {
       printf("Error (%s) at pread\n", strerror(errno));
       goto error;
     }
-    evictPage(&eviction_file_mapping, read_victim_addr);
+    evictPage(&eviction_file_mapping, read_victim_addr, 0);
     // trigger lru_add_drain() by calling posix_fadvice
-    posix_fadvise(eviction_file_mapping.fd_, 0, PAGE_SIZE, POSIX_FADV_DONTNEED);
+    posix_fadvise(eviction_file_mapping.internal_.fd_, 0, PAGE_SIZE, POSIX_FADV_DONTNEED);
   }
   else if(mode == ACCESS_MAPPED_CLEAN_FILE_PAGE_USER_2)
   {
@@ -350,26 +391,26 @@ int main(int argc, char *argv[])
     // first access
     tmp = *read_target_addr;
     // victim page
-    if(pread(test_read_file_mapping.fd_, (void *) &tmp, 1, TEST_FILE_VICTIM_PAGE * PAGE_SIZE) != 1)
+    if(pread(test_read_file_mapping.internal_.fd_, (void *) &tmp, 1, TEST_FILE_VICTIM_PAGE * PAGE_SIZE) != 1)
     {
       printf("Error (%s) at pread\n", strerror(errno));
       goto error;
     }
-    evictPage(&eviction_file_mapping, read_victim_addr);
+    evictPage(&eviction_file_mapping, read_victim_addr, 0);
     // trigger lru_add_drain() by calling posix_fadvice
-    posix_fadvise(eviction_file_mapping.fd_, 0, PAGE_SIZE, POSIX_FADV_DONTNEED);
+    posix_fadvise(eviction_file_mapping.internal_.fd_, 0, PAGE_SIZE, POSIX_FADV_DONTNEED);
 
     // second access
     tmp = *read_target_addr;
     // victim page
-    if(pread(test_read_file_mapping.fd_, (void *) &tmp, 1, TEST_FILE_VICTIM_PAGE2 * PAGE_SIZE) != 1)
+    if(pread(test_read_file_mapping.internal_.fd_, (void *) &tmp, 1, TEST_FILE_VICTIM_PAGE2 * PAGE_SIZE) != 1)
     {
       printf("Error (%s) at pread\n", strerror(errno));
       goto error;
     }
-    evictPage(&eviction_file_mapping, read_victim2_addr);
+    evictPage(&eviction_file_mapping, read_victim2_addr, 0);
     // trigger lru_add_drain() by calling posix_fadvice
-    posix_fadvise(eviction_file_mapping.fd_, 0, PAGE_SIZE, POSIX_FADV_DONTNEED);
+    posix_fadvise(eviction_file_mapping.internal_.fd_, 0, PAGE_SIZE, POSIX_FADV_DONTNEED);
   }
   else if(mode == ACCESS_MAPPED_FILE_PAGE_USER_1)
   {
@@ -377,14 +418,14 @@ int main(int argc, char *argv[])
     // first access
     *write_target_addr = 0xaa;
     // victim page
-    if(pread(test_read_file_mapping.fd_, (void *) &tmp, 1, TEST_FILE_VICTIM_PAGE * PAGE_SIZE) != 1)
+    if(pread(test_read_file_mapping.internal_.fd_, (void *) &tmp, 1, TEST_FILE_VICTIM_PAGE * PAGE_SIZE) != 1)
     {
       printf("Error (%s) at pread\n", strerror(errno));
       goto error;
     }
-    evictPage(&eviction_file_mapping, read_victim_addr);
+    evictPage(&eviction_file_mapping, read_victim_addr, 0);
     // trigger lru_add_drain() by calling posix_fadvice
-    posix_fadvise(eviction_file_mapping.fd_, 0, PAGE_SIZE, POSIX_FADV_DONTNEED);
+    posix_fadvise(eviction_file_mapping.internal_.fd_, 0, PAGE_SIZE, POSIX_FADV_DONTNEED);
   }
   else if(mode == ACCESS_MAPPED_FILE_PAGE_USER_2)
   {
@@ -392,26 +433,26 @@ int main(int argc, char *argv[])
     // first access
     *write_target_addr = 0xaa;
     // victim page
-    if(pread(test_read_file_mapping.fd_, (void *) &tmp, 1, TEST_FILE_VICTIM_PAGE * PAGE_SIZE) != 1)
+    if(pread(test_read_file_mapping.internal_.fd_, (void *) &tmp, 1, TEST_FILE_VICTIM_PAGE * PAGE_SIZE) != 1)
     {
       printf("Error (%s) at pread\n", strerror(errno));
       goto error;
     }
-    evictPage(&eviction_file_mapping, read_victim_addr);
+    evictPage(&eviction_file_mapping, read_victim_addr, 0);
     // trigger lru_add_drain() by calling posix_fadvice
-    posix_fadvise(eviction_file_mapping.fd_, 0, PAGE_SIZE, POSIX_FADV_DONTNEED);
+    posix_fadvise(eviction_file_mapping.internal_.fd_, 0, PAGE_SIZE, POSIX_FADV_DONTNEED);
 
     // second access
     *write_target_addr = 0xbb;
     // victim page
-    if(pread(test_read_file_mapping.fd_, (void *) &tmp, 1, TEST_FILE_VICTIM_PAGE2 * PAGE_SIZE) != 1)
+    if(pread(test_read_file_mapping.internal_.fd_, (void *) &tmp, 1, TEST_FILE_VICTIM_PAGE2 * PAGE_SIZE) != 1)
     {
       printf("Error (%s) at pread\n", strerror(errno));
       goto error;
     }
-    evictPage(&eviction_file_mapping, read_victim2_addr);
+    evictPage(&eviction_file_mapping, read_victim2_addr, 0);
     // trigger lru_add_drain() by calling posix_fadvice
-    posix_fadvise(eviction_file_mapping.fd_, 0, PAGE_SIZE, POSIX_FADV_DONTNEED);
+    posix_fadvise(eviction_file_mapping.internal_.fd_, 0, PAGE_SIZE, POSIX_FADV_DONTNEED);
   }
   else if(mode == ACCESS_MAPPED_EXEC_CLEAN_FILE_PAGE_USER_1)
   {
@@ -419,152 +460,164 @@ int main(int argc, char *argv[])
     // first access
     tmp = *exec_target_addr;
     // victim page
-    if(pread(test_read_file_mapping.fd_, (void *) &tmp, 1, TEST_FILE_VICTIM_PAGE * PAGE_SIZE) != 1)
+    if(pread(test_read_file_mapping.internal_.fd_, (void *) &tmp, 1, TEST_FILE_VICTIM_PAGE * PAGE_SIZE) != 1)
     {
       printf("Error (%s) at pread\n", strerror(errno));
       goto error;
     }
-    evictPage(&eviction_file_mapping, read_victim_addr);
+    evictPage(&eviction_file_mapping, read_victim_addr, 0);
     // trigger lru_add_drain() by calling posix_fadvice
-    posix_fadvise(eviction_file_mapping.fd_, 0, PAGE_SIZE, POSIX_FADV_DONTNEED);
+    posix_fadvise(eviction_file_mapping.internal_.fd_, 0, PAGE_SIZE, POSIX_FADV_DONTNEED);
   }
   else if(mode == EXT_READ_ACCESS_MAPPED_EXEC_CLEAN_FILE_PAGE_USER_2) 
   {
     DEBUG_PRINT(("Executing experiment: %i\n", mode));
     // two reads of executably mapped target page
-    if(pread(test_exec_file_mapping.fd_, (void *) &tmp, 1, TEST_FILE_TARGET_PAGE * PAGE_SIZE) != 1 ||
-       pread(test_exec_file_mapping.fd_, (void *) &tmp, 1, TEST_FILE_TARGET_PAGE * PAGE_SIZE) != 1)
+    if(pread(test_exec_file_mapping.internal_.fd_, (void *) &tmp, 1, TEST_FILE_TARGET_PAGE * PAGE_SIZE) != 1 ||
+       pread(test_exec_file_mapping.internal_.fd_, (void *) &tmp, 1, TEST_FILE_TARGET_PAGE * PAGE_SIZE) != 1)
     {
       printf("Error (%s) at pread\n", strerror(errno));
       goto error;
     }
     // trigger lru_add_drain() by calling posix_fadvice
-    posix_fadvise(eviction_file_mapping.fd_, 0, PAGE_SIZE, POSIX_FADV_DONTNEED);
+    posix_fadvise(eviction_file_mapping.internal_.fd_, 0, PAGE_SIZE, POSIX_FADV_DONTNEED);
     // access executably mapped target page
     tmp = *exec_target_addr;
 
     // two reads of read-only target mapped page
-    if(pread(test_read_file_mapping.fd_, (void *) &tmp, 1, TEST_FILE_TARGET_PAGE * PAGE_SIZE) != 1 ||
-       pread(test_read_file_mapping.fd_, (void *) &tmp, 1, TEST_FILE_TARGET_PAGE * PAGE_SIZE) != 1)
+    if(pread(test_read_file_mapping.internal_.fd_, (void *) &tmp, 1, TEST_FILE_TARGET_PAGE * PAGE_SIZE) != 1 ||
+       pread(test_read_file_mapping.internal_.fd_, (void *) &tmp, 1, TEST_FILE_TARGET_PAGE * PAGE_SIZE) != 1)
     {
       printf("Error (%s) at pread\n", strerror(errno));
       goto error;
     }
     // trigger lru_add_drain() by calling posix_fadvice
-    posix_fadvise(eviction_file_mapping.fd_, 0, PAGE_SIZE, POSIX_FADV_DONTNEED);
+    posix_fadvise(eviction_file_mapping.internal_.fd_, 0, PAGE_SIZE, POSIX_FADV_DONTNEED);
     // access to read-only mapped page
     tmp = *read_target_addr;
 
     // wait till readable target is evicted
     // executable target should still be in memory even though "older" as it got a second run through the active list
-    evictPage(&eviction_file_mapping, read_target_addr);
+    evictPage(&eviction_file_mapping, read_target_addr, 1);
     // trigger lru_add_drain() by calling posix_fadvice
-    posix_fadvise(eviction_file_mapping.fd_, 0, PAGE_SIZE, POSIX_FADV_DONTNEED);
+    posix_fadvise(eviction_file_mapping.internal_.fd_, 0, PAGE_SIZE, POSIX_FADV_DONTNEED);
   }
   else if(mode == READ_ACCESS_MAPPED_CLEAN_FILE_PAGE_USER_1) 
   {
     DEBUG_PRINT(("Executing experiment: %i\n", mode));
     // read access 
-    if(pread(test_read_file_mapping.fd_, (void *) &tmp, 1, TEST_FILE_TARGET_PAGE * PAGE_SIZE) != 1)
+    if(pread(test_read_file_mapping.internal_.fd_, (void *) &tmp, 1, TEST_FILE_TARGET_PAGE * PAGE_SIZE) != 1)
     {
       printf("Error (%s) at pread\n", strerror(errno));
       goto error;
     }
+    // trigger lru_add_drain() by calling posix_fadvice
+    posix_fadvise(eviction_file_mapping.internal_.fd_, 0, PAGE_SIZE, POSIX_FADV_DONTNEED);
     // mapping access
     tmp = *read_target_addr;
 
     // victim page
-    if(pread(test_read_file_mapping.fd_, (void *) &tmp, 1, TEST_FILE_VICTIM_PAGE * PAGE_SIZE) != 1)
+    if(pread(test_read_file_mapping.internal_.fd_, (void *) &tmp, 1, TEST_FILE_VICTIM_PAGE * PAGE_SIZE) != 1)
     {
       printf("Error (%s) at pread\n", strerror(errno));
       goto error;
     }
-    evictPage(&eviction_file_mapping, read_victim_addr);
+    evictPage(&eviction_file_mapping, read_victim_addr, 0);
     // trigger lru_add_drain() by calling posix_fadvice
-    posix_fadvise(eviction_file_mapping.fd_, 0, PAGE_SIZE, POSIX_FADV_DONTNEED);
+    posix_fadvise(eviction_file_mapping.internal_.fd_, 0, PAGE_SIZE, POSIX_FADV_DONTNEED);
   }
   else if(mode == EXT_READ_ACCESS_MAPPED_CLEAN_FILE_PAGE_USER_3) 
   {
     DEBUG_PRINT(("Executing experiment: %i\n", mode));
     // three reads of read-only mapped target page
-    if(pread(test_read_file_mapping.fd_, (void *) &tmp, 1, TEST_FILE_TARGET_PAGE * PAGE_SIZE) != 1 ||
-       pread(test_read_file_mapping.fd_, (void *) &tmp, 1, TEST_FILE_TARGET_PAGE * PAGE_SIZE) != 1 ||
-       pread(test_read_file_mapping.fd_, (void *) &tmp, 1, TEST_FILE_TARGET_PAGE * PAGE_SIZE) != 1)
+    if(pread(test_read_file_mapping.internal_.fd_, (void *) &tmp, 1, TEST_FILE_TARGET_PAGE * PAGE_SIZE) != 1 ||
+       pread(test_read_file_mapping.internal_.fd_, (void *) &tmp, 1, TEST_FILE_TARGET_PAGE * PAGE_SIZE) != 1 ||
+       pread(test_read_file_mapping.internal_.fd_, (void *) &tmp, 1, TEST_FILE_TARGET_PAGE * PAGE_SIZE) != 1)
     {
       printf("Error (%s) at pread\n", strerror(errno));
       goto error;
     }
     // trigger lru_add_drain() by calling posix_fadvice
-    posix_fadvise(eviction_file_mapping.fd_, 0, PAGE_SIZE, POSIX_FADV_DONTNEED);
+    posix_fadvise(eviction_file_mapping.internal_.fd_, 0, PAGE_SIZE, POSIX_FADV_DONTNEED);
     // access to read-only mapped target page
     tmp = *read_target_addr;
 
     // two reads of executable mapped target page
-    if(pread(test_exec_file_mapping.fd_, (void *) &tmp, 1, TEST_FILE_TARGET_PAGE * PAGE_SIZE) != 1 ||
-       pread(test_exec_file_mapping.fd_, (void *) &tmp, 1, TEST_FILE_TARGET_PAGE * PAGE_SIZE) != 1)
+    if(pread(test_exec_file_mapping.internal_.fd_, (void *) &tmp, 1, TEST_FILE_TARGET_PAGE * PAGE_SIZE) != 1 ||
+       pread(test_exec_file_mapping.internal_.fd_, (void *) &tmp, 1, TEST_FILE_TARGET_PAGE * PAGE_SIZE) != 1)
     {
       printf("Error (%s) at pread\n", strerror(errno));
       goto error;
     }
     // trigger lru_add_drain() by calling posix_fadvice
-    posix_fadvise(eviction_file_mapping.fd_, 0, PAGE_SIZE, POSIX_FADV_DONTNEED);
+    posix_fadvise(eviction_file_mapping.internal_.fd_, 0, PAGE_SIZE, POSIX_FADV_DONTNEED);
 
     // wait till executable target is evicted
     // readable target should not be in memory anymore even though it had three reads and was referenced via mapping
-    evictPage(&eviction_file_mapping, exec_target_addr);
+    evictPage(&eviction_file_mapping, exec_target_addr, 1);
     // trigger lru_add_drain() by calling posix_fadvice
-    posix_fadvise(eviction_file_mapping.fd_, 0, PAGE_SIZE, POSIX_FADV_DONTNEED);
+    posix_fadvise(eviction_file_mapping.internal_.fd_, 0, PAGE_SIZE, POSIX_FADV_DONTNEED);
   }
   else if(mode == EXT_READ_ACCESS_MAPPED_CLEAN_FILE_PAGE_USER_1) 
   {
     DEBUG_PRINT(("Executing experiment: %i\n", mode));
+
+    // buffer pages (128MB) to avoid both pages are evicted at the same time
+    // we are only interested in if the executable one is first in the sequence
+    for(size_t p = eviction_file_mapping.size_pages_ - 1; p > eviction_file_mapping.size_pages_ - 1 - 32768; p--) 
+    {
+      // access 
+      tmp = *((uint8_t *) eviction_file_mapping.addr_ + p * PAGE_SIZE);
+    }
+
     // one read of read-only mapped target page
-    if(pread(test_read_file_mapping.fd_, (void *) &tmp, 1, TEST_FILE_TARGET_PAGE * PAGE_SIZE) != 1)
+    if(pread(test_read_file_mapping.internal_.fd_, (void *) &tmp, 1, TEST_FILE_TARGET_PAGE * PAGE_SIZE) != 1)
     {
       printf("Error (%s) at pread\n", strerror(errno));
       goto error;
     }
     // trigger lru_add_drain() by calling posix_fadvice
-    posix_fadvise(eviction_file_mapping.fd_, 0, PAGE_SIZE, POSIX_FADV_DONTNEED);
+    posix_fadvise(eviction_file_mapping.internal_.fd_, 0, PAGE_SIZE, POSIX_FADV_DONTNEED);
     // access to read-only mapped target page
     tmp = *read_target_addr;
 
     // two reads of executable target
-    if(pread(test_exec_file_mapping.fd_, (void *) &tmp, 1, TEST_FILE_TARGET_PAGE * PAGE_SIZE) != 1 ||
-       pread(test_exec_file_mapping.fd_, (void *) &tmp, 1, TEST_FILE_TARGET_PAGE * PAGE_SIZE) != 1)
+    if(pread(test_exec_file_mapping.internal_.fd_, (void *) &tmp, 1, TEST_FILE_TARGET_PAGE * PAGE_SIZE) != 1 ||
+       pread(test_exec_file_mapping.internal_.fd_, (void *) &tmp, 1, TEST_FILE_TARGET_PAGE * PAGE_SIZE) != 1)
     {
       printf("Error (%s) at pread\n", strerror(errno));
       goto error;
     }
     // trigger lru_add_drain() by calling posix_fadvice
-    posix_fadvise(eviction_file_mapping.fd_, 0, PAGE_SIZE, POSIX_FADV_DONTNEED);
+    posix_fadvise(eviction_file_mapping.internal_.fd_, 0, PAGE_SIZE, POSIX_FADV_DONTNEED);
 
     // wait till executable target is evicted
     // readable target should still be in memory -> compare with previous case
-    evictPage(&eviction_file_mapping, exec_target_addr);
+    evictPage(&eviction_file_mapping, exec_target_addr, 1);
     // trigger lru_add_drain() by calling posix_fadvice
-    posix_fadvise(eviction_file_mapping.fd_, 0, PAGE_SIZE, POSIX_FADV_DONTNEED);
+    posix_fadvise(eviction_file_mapping.internal_.fd_, 0, PAGE_SIZE, POSIX_FADV_DONTNEED);
   }
   else if(mode == WORKING_SET_READ_REFAULT_FILE_PAGE_USER ||
     mode == WORKING_SET_ACCESS_REFAULT_FILE_PAGE_USER) {
     DEBUG_PRINT(("Executing experiment: %i\n", mode));
     // one read of read-only mapped target page
-    if(pread(test_read_file_mapping.fd_, (void *) &tmp, 1, TEST_FILE_TARGET_PAGE * PAGE_SIZE) != 1)
+    if(pread(test_read_file_mapping.internal_.fd_, (void *) &tmp, 1, TEST_FILE_TARGET_PAGE * PAGE_SIZE) != 1)
     {
       printf("Error (%s) at pread\n", strerror(errno));
       goto error;
     }
 
     // wait till read-only target is evicted
-    evictPage(&eviction_file_mapping, read_target_addr);
+    // too much pressure could evict shadow entry
+    evictPage(&eviction_file_mapping, read_target_addr, 0);
     // trigger lru_add_drain() by calling posix_fadvice
-    posix_fadvise(eviction_file_mapping.fd_, 0, PAGE_SIZE, POSIX_FADV_DONTNEED);
+    posix_fadvise(eviction_file_mapping.internal_.fd_, 0, PAGE_SIZE, POSIX_FADV_DONTNEED);
     // wait until kswapd0 sleeps again
     waitUntilKswapd0Sleeps();
 
     // refault
     if(mode == WORKING_SET_READ_REFAULT_FILE_PAGE_USER) {
-      if(pread(test_read_file_mapping.fd_, (void *) &tmp, 1, TEST_FILE_TARGET_PAGE * PAGE_SIZE) != 1)
+      if(pread(test_read_file_mapping.internal_.fd_, (void *) &tmp, 1, TEST_FILE_TARGET_PAGE * PAGE_SIZE) != 1)
       {
         printf("Error (%s) at pread\n", strerror(errno));
         goto error;
@@ -574,34 +627,35 @@ int main(int argc, char *argv[])
       tmp = *read_target_addr;
     }
     // trigger lru_add_drain() by calling posix_fadvice
-    posix_fadvise(eviction_file_mapping.fd_, 0, PAGE_SIZE, POSIX_FADV_DONTNEED);
+    posix_fadvise(eviction_file_mapping.internal_.fd_, 0, PAGE_SIZE, POSIX_FADV_DONTNEED);
   }
   else if(mode == WORKING_SET_WRITE_REFAULT_FILE_PAGE_USER) {
     DEBUG_PRINT(("Executing experiment: %i\n", mode));
     // one write to read-write mapped target page
     tmp = 0xaa;
-    if(pwrite(test_write_file_mapping.fd_, (void *) &tmp, 1, TEST_FILE_TARGET_PAGE * PAGE_SIZE) != 1)
+    if(pwrite(test_write_file_mapping.internal_.fd_, (void *) &tmp, 1, TEST_FILE_TARGET_PAGE * PAGE_SIZE) != 1)
     {
       printf("Error (%s) at pread\n", strerror(errno));
       goto error;
     }
 
     // wait till read-only target is evicted
-    evictPage(&eviction_file_mapping, write_target_addr);
+    // too much pressure could evict shadow entry
+    evictPage(&eviction_file_mapping, write_target_addr, 0);
     // trigger lru_add_drain() by calling posix_fadvice
-    posix_fadvise(eviction_file_mapping.fd_, 0, PAGE_SIZE, POSIX_FADV_DONTNEED);
+    posix_fadvise(eviction_file_mapping.internal_.fd_, 0, PAGE_SIZE, POSIX_FADV_DONTNEED);
     // wait until kswapd0 sleeps again
     waitUntilKswapd0Sleeps();
 
     // refault
     tmp = 0xbb;
-    if(pwrite(test_write_file_mapping.fd_, (void *) &tmp, 1, TEST_FILE_TARGET_PAGE * PAGE_SIZE) != 1)
+    if(pwrite(test_write_file_mapping.internal_.fd_, (void *) &tmp, 1, TEST_FILE_TARGET_PAGE * PAGE_SIZE) != 1)
     {
       printf("Error (%s) at pread\n", strerror(errno));
       goto error;
     }
     // trigger lru_add_drain() by calling posix_fadvice
-    posix_fadvise(eviction_file_mapping.fd_, 0, PAGE_SIZE, POSIX_FADV_DONTNEED);
+    posix_fadvise(eviction_file_mapping.internal_.fd_, 0, PAGE_SIZE, POSIX_FADV_DONTNEED);
   }
   else if(mode == DIRTY_FILE_PAGE_USER_RECLAIMING) {
     DEBUG_PRINT(("Executing experiment: %i\n", mode));
@@ -622,7 +676,7 @@ int main(int argc, char *argv[])
     sampler_arg.target_pfn_ = map_entry.present_swap.present_info.pfn;
     startPageflagSampler(&sampler_arg);
     // wait till target is evicted
-    evictPage(&eviction_file_mapping, write_target_addr);
+    evictPage(&eviction_file_mapping, write_target_addr, 1);
     stopPageflagSampler(&sampler_arg);
   }
   waitUntilKswapd0Sleeps();
@@ -656,7 +710,13 @@ int main(int argc, char *argv[])
     printf("Writeable target page flags:\n");
     samplePageflags(&pageflags_fd, write_target_addr);
   }
-
+  
+  // only needed by this program, can be evicted
+  adviseFileUsage(&test_read_file_mapping, 0, 0, USAGE_DONTNEED);
+  adviseFileUsage(&test_exec_file_mapping, 0, 0, USAGE_DONTNEED);
+  adviseFileUsage(&test_write_file_mapping, 0, 0, USAGE_DONTNEED);
+  adviseFileUsage(&eviction_file_mapping, 0, 0, USAGE_DONTNEED);
+  adviseFileUsage(&eviction2_file_mapping, 0, 0, USAGE_DONTNEED);
 
   goto cleanup;
 error:
@@ -669,7 +729,8 @@ cleanup:
   closeFileMapping(&test_read_file_mapping);
   closeFileMapping(&test_write_file_mapping);
   closeFileMapping(&eviction_file_mapping);
-
+  closeFileMapping(&eviction2_file_mapping);
+  closePageFlagsFd(&pageflags_fd);
   return ret;
 }
 
@@ -767,6 +828,7 @@ void waitUntilKswapd0Sleeps()
     .tv_sec = 0,
     .tv_nsec = WAIT_TIME_NS
   };
+  size_t tries = 0;
 
   // wait till kswapd0 is sleeping
   while(1) 
@@ -786,7 +848,8 @@ void waitUntilKswapd0Sleeps()
     }
     if(strlen(line_buffer) == 2 && line_buffer[0] == 'S') 
     {
-      break;
+      tries++;
+      if(tries == 10) break;
     }
 
     pclose(process_pipe);
@@ -800,31 +863,49 @@ void waitUntilKswapd0Sleeps()
 }
 
 
-void evictPage(FileMapping *eviction_file_mapping, void *victim_addr) {
+void evictPage(FileMapping *eviction_file_mapping, void *victim_addr, int flush_active) {
   volatile uint8_t tmp = 0;
   unsigned char pc_status;
+  static int direction = 1;
   (void) tmp;
 
+  // switch direction
+  direction ^= 1;
+
+  if(flush_active) 
+  {
+    if(mprotect(eviction_file_mapping->addr_, eviction_file_mapping->size_, PROT_READ | PROT_EXEC) == -1) 
+    {
+      printf("Warning: mprotect failed (%s)!", strerror(errno));
+    }
+  }
+  else 
+  {
+    if(mprotect(eviction_file_mapping->addr_, eviction_file_mapping->size_, PROT_READ) == -1) 
+    {
+      printf("Warning: mprotect failed (%s)!", strerror(errno));
+    }  
+  }
+
+  // do not prefetch, we do not want to pressure memory too much
+  adviseFileUsage(eviction_file_mapping, 0, 0, USAGE_RANDOM);
   while(1)
   {
-    for(size_t p = 0; p < eviction_file_mapping->size_pages_; p++) 
+    for(size_t p = direction ? (eviction_file_mapping->size_pages_ - 1) : 0; 
+      direction ? (p > 0) : (p < eviction_file_mapping->size_pages_); 
+      direction ? p-- : p++) 
     {
-      // stop as soon as victim page left memory
-      mincore(victim_addr, PAGE_SIZE, &pc_status);
-      if(!(pc_status & 1)) 
-      {
-        return;
-      }
       tmp = *((uint8_t *) eviction_file_mapping->addr_ + p * PAGE_SIZE);
       // stop as soon as victim page left memory
       mincore(victim_addr, PAGE_SIZE, &pc_status);
       if(!(pc_status & 1)) 
       {
+        // do not pressure memory anymore (target evicted)
+        adviseFileUsage(eviction_file_mapping, 0, 0, USAGE_DONTNEED);
         return;
       }
     }
   }
-  posix_fadvise(eviction_file_mapping->fd_, 0, 0, POSIX_FADV_DONTNEED);  
 }
 
 void flushExclusivePage(FileMapping *mapping, size_t page) {
@@ -833,7 +914,7 @@ void flushExclusivePage(FileMapping *mapping, size_t page) {
 
   // flush target + victim page
   do {
-    posix_fadvise(mapping->fd_, page * PAGE_SIZE, PAGE_SIZE, POSIX_FADV_DONTNEED);
+    adviseFileUsage(mapping, page * PAGE_SIZE, PAGE_SIZE, USAGE_DONTNEED);
     if(mincore(target_addr, PAGE_SIZE, &pc_status) != 0) {
       printf("Warning, error (%s) at mincore\n", strerror(errno));
     }
