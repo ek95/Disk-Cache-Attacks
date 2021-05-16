@@ -6,10 +6,6 @@
 #include "Windows.h"
 #endif 
 
-#define RANDOM_SOURCE_PATH "/dev/urandom"
-#define FILE_COPY_BS (1*1024*1024ULL)
-#define DEF_PAGE_SIZE 4096
-
 
 // file specifiers
 #define FILE_ACCESS_READ 0x00
@@ -27,6 +23,12 @@
 // only windows
 #define MAPPING_LARGE_PAGES 0x16
 
+// query file cache state sources
+// linux
+#define FC_SOURCE_MINCORE 0x00
+#define FC_SOURCE_PREADV2 0x01
+// windows
+#define FC_SOURCE_QUERY_WORKING_SET 0x00
 
 // usage advices 
 // directly compatible with linux madvise and posix_fadvise
@@ -36,11 +38,16 @@
 #define USAGE_WILLNEED 0x03
 #define USAGE_DONTNEED 0x04
 
+#define DISK_ACCESS_THRESHOLD_NS (1 * 1000UL) 
+
+#define RANDOM_SOURCE_PATH "/dev/urandom"
+#define FILE_COPY_BS (1 * 1024 * 1024ULL)
+#define DEF_PAGE_SIZE 4096
+
 
 #ifdef __linux
 struct _FileMappingInternal_ {
     int fd_;
-    unsigned char *page_status_;
 };
 #elif defined(_WIN32)
 struct _FileMappingInternal_ {
@@ -58,19 +65,22 @@ typedef struct _FileMapping_
     void *addr_;
     size_t size_;
     size_t size_pages_;
+    uint8_t *page_cache_status_;
     // architecture dependent
     struct _FileMappingInternal_ internal_;
 } FileMapping;
+
+typedef int (*FcStateFn)(FileMapping *file_mapping, size_t offset, size_t len, uint8_t *vec);
 
 
 void initFileMapping(FileMapping *file_mapping);
 int mapFile(FileMapping *file_mapping, const char *file_path, int file_flags, int mapping_flag);
 int adviseFileUsage(FileMapping *file_mapping, size_t offset, size_t len, int advice);
-int fileMappingGetCacheStatus(FileMapping *file_mapping);
-int fileMappingGetCacheStatusPage(FileMapping *file_mapping, int *status);
+int getCacheStatusFile(FileMapping *file_mapping);
+int getCacheStatusFilePage(FileMapping *file_mapping, size_t offset, uint8_t *status);
 void closeMappingOnly(void *arg);
 void closeFileMapping(void *arg);
 int createRandomFile(char *filename, size_t size);
-
+int changeFcStateSource(int source);
 
 #endif

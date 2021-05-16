@@ -20,9 +20,9 @@
 #include "tsc_bench.h"
 
 // mincore fixed, preadv2 still works, read nonblock does not see man, access time does 
-//#define _MINCORE_
+#define _MINCORE_
 //#define _PREADV2_
-#define _READ_NONBLOCK_
+//#define _READ_NONBLOCK_
 //#define _ACCESS_TIME_
 #define DISK_ACCESS_THRESHOLD_NS (1 * 1000UL) 
 
