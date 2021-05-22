@@ -5,6 +5,7 @@
 #include <stdint.h>
 #ifdef _WIN32
 #include "Windows.h"
+#include "psapi.h"
 #endif 
 
 
@@ -12,8 +13,9 @@
 #define FILE_ACCESS_READ 0x01
 #define FILE_ACCESS_WRITE 0x02
 // only windows
-#define FILE_USAGE_RANDOM 0x04
-#define FILE_USAGE_SEQUENTIAL 0x08
+#define FILE_ACCESS_EXECUTE 0x04
+#define FILE_USAGE_RANDOM 0x08
+#define FILE_USAGE_SEQUENTIAL 0x10
 
 // mapping specifiers
 #define MAPPING_ACCESS_READ 0x01

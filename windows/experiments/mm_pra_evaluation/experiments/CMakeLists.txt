@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.10)
 
-project(tsc_bench)
+project(experiments C)
 
 # release flags 
 set(CMAKE_C_FLAGS_RELEASE "-O3 -Wall -Wunused -Wpedantic")
@@ -21,11 +21,9 @@ set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
-if(${CMAKE_SYSTEM_NAME} MATCHES "Linux")
-  # enable ctest
-  enable_testing()
-endif()
+# external libs
+include_directories(../../../../libs/filemap/src)
+add_subdirectory(../../../../libs/filemap lib/filemap)
 
 # main project
-include_directories(src)
 add_subdirectory(src)

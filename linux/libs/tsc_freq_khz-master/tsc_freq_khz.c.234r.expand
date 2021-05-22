@@ -1,0 +1,468 @@
+
+;; Function tsc_freq_khz_store (tsc_freq_khz_store, funcdef_no=1724, decl_uid=23414, cgraph_uid=1799, symbol_order=1845)
+
+
+;; Generating RTL for gimple basic block 2
+
+
+try_optimize_cfg iteration 1
+
+Merging block 3 into block 2...
+Merged blocks 2 and 3.
+Merged 2 and 3 without moving.
+Removing jump 11.
+Merging block 4 into block 2...
+Merged blocks 2 and 4.
+Merged 2 and 4 without moving.
+
+
+try_optimize_cfg iteration 2
+
+
+
+;;
+;; Full RTL generated for this function:
+;;
+(note 1 0 7 NOTE_INSN_DELETED)
+(note 7 1 2 2 [bb 2] NOTE_INSN_BASIC_BLOCK)
+(insn 2 7 3 2 (set (reg/v/f:DI 88 [ kobj ])
+        (reg:DI 5 di [ kobj ])) "/home/erik/Dokumente/Studium/Master/Master-Thesis/github/Disk-Cache-Attacks/linux/libs/tsc_freq_khz-master/tsc_freq_khz.c":28 -1
+     (nil))
+(insn 3 2 4 2 (set (reg/v/f:DI 89 [ attr ])
+        (reg:DI 4 si [ attr ])) "/home/erik/Dokumente/Studium/Master/Master-Thesis/github/Disk-Cache-Attacks/linux/libs/tsc_freq_khz-master/tsc_freq_khz.c":28 -1
+     (nil))
+(insn 4 3 5 2 (set (reg/v/f:DI 90 [ buf ])
+        (reg:DI 1 dx [ buf ])) "/home/erik/Dokumente/Studium/Master/Master-Thesis/github/Disk-Cache-Attacks/linux/libs/tsc_freq_khz-master/tsc_freq_khz.c":28 -1
+     (nil))
+(insn 5 4 6 2 (set (reg/v:DI 91 [ count ])
+        (reg:DI 2 cx [ count ])) "/home/erik/Dokumente/Studium/Master/Master-Thesis/github/Disk-Cache-Attacks/linux/libs/tsc_freq_khz-master/tsc_freq_khz.c":28 -1
+     (nil))
+(note 6 5 9 2 NOTE_INSN_FUNCTION_BEG)
+(debug_insn 9 6 10 2 (debug_marker) "/home/erik/Dokumente/Studium/Master/Master-Thesis/github/Disk-Cache-Attacks/linux/libs/tsc_freq_khz-master/tsc_freq_khz.c":30 -1
+     (nil))
+(insn 10 9 14 2 (set (reg:DI 87 [ <retval> ])
+        (reg/v:DI 91 [ count ])) "/home/erik/Dokumente/Studium/Master/Master-Thesis/github/Disk-Cache-Attacks/linux/libs/tsc_freq_khz-master/tsc_freq_khz.c":30 -1
+     (nil))
+(insn 14 10 15 2 (set (reg/i:DI 0 ax)
+        (reg:DI 87 [ <retval> ])) "/home/erik/Dokumente/Studium/Master/Master-Thesis/github/Disk-Cache-Attacks/linux/libs/tsc_freq_khz-master/tsc_freq_khz.c":31 -1
+     (nil))
+(insn 15 14 0 2 (use (reg/i:DI 0 ax)) "/home/erik/Dokumente/Studium/Master/Master-Thesis/github/Disk-Cache-Attacks/linux/libs/tsc_freq_khz-master/tsc_freq_khz.c":31 -1
+     (nil))
+
+;; Function tsc_freq_khz_show (tsc_freq_khz_show, funcdef_no=1723, decl_uid=23407, cgraph_uid=1798, symbol_order=1844)
+
+
+;; Generating RTL for gimple basic block 2
+
+
+try_optimize_cfg iteration 1
+
+Merging block 3 into block 2...
+Merged blocks 2 and 3.
+Merged 2 and 3 without moving.
+Removing jump 19.
+Merging block 4 into block 2...
+Merged blocks 2 and 4.
+Merged 2 and 4 without moving.
+
+
+try_optimize_cfg iteration 2
+
+
+
+;;
+;; Full RTL generated for this function:
+;;
+(note 1 0 6 NOTE_INSN_DELETED)
+(note 6 1 2 2 [bb 2] NOTE_INSN_BASIC_BLOCK)
+(insn 2 6 3 2 (set (reg/v/f:DI 90 [ kobj ])
+        (reg:DI 5 di [ kobj ])) "/home/erik/Dokumente/Studium/Master/Master-Thesis/github/Disk-Cache-Attacks/linux/libs/tsc_freq_khz-master/tsc_freq_khz.c":20 -1
+     (nil))
+(insn 3 2 4 2 (set (reg/v/f:DI 91 [ attr ])
+        (reg:DI 4 si [ attr ])) "/home/erik/Dokumente/Studium/Master/Master-Thesis/github/Disk-Cache-Attacks/linux/libs/tsc_freq_khz-master/tsc_freq_khz.c":20 -1
+     (nil))
+(insn 4 3 5 2 (set (reg/v/f:DI 92 [ buf ])
+        (reg:DI 1 dx [ buf ])) "/home/erik/Dokumente/Studium/Master/Master-Thesis/github/Disk-Cache-Attacks/linux/libs/tsc_freq_khz-master/tsc_freq_khz.c":20 -1
+     (nil))
+(note 5 4 8 2 NOTE_INSN_FUNCTION_BEG)
+(debug_insn 8 5 9 2 (debug_marker) "/home/erik/Dokumente/Studium/Master/Master-Thesis/github/Disk-Cache-Attacks/linux/libs/tsc_freq_khz-master/tsc_freq_khz.c":21 -1
+     (nil))
+(debug_insn 9 8 10 2 (debug_marker) "/home/erik/Dokumente/Studium/Master/Master-Thesis/github/Disk-Cache-Attacks/linux/libs/tsc_freq_khz-master/tsc_freq_khz.c":22 -1
+     (nil))
+(insn 10 9 11 2 (set (reg:SI 93)
+        (mem/c:SI (symbol_ref:DI ("tsc_khz") [flags 0x40] <var_decl 0x7fbc8e3bf990 tsc_khz>) [2 tsc_khz+0 S4 A32])) "/home/erik/Dokumente/Studium/Master/Master-Thesis/github/Disk-Cache-Attacks/linux/libs/tsc_freq_khz-master/tsc_freq_khz.c":22 -1
+     (nil))
+(insn 11 10 12 2 (set (reg:SI 1 dx)
+        (reg:SI 93)) "/home/erik/Dokumente/Studium/Master/Master-Thesis/github/Disk-Cache-Attacks/linux/libs/tsc_freq_khz-master/tsc_freq_khz.c":22 -1
+     (nil))
+(insn 12 11 13 2 (set (reg:DI 4 si)
+        (symbol_ref/f:DI ("*.LC0") [flags 0x2] <var_decl 0x7fbc8d779d80 *.LC0>)) "/home/erik/Dokumente/Studium/Master/Master-Thesis/github/Disk-Cache-Attacks/linux/libs/tsc_freq_khz-master/tsc_freq_khz.c":22 -1
+     (nil))
+(insn 13 12 14 2 (set (reg:DI 5 di)
+        (reg/v/f:DI 92 [ buf ])) "/home/erik/Dokumente/Studium/Master/Master-Thesis/github/Disk-Cache-Attacks/linux/libs/tsc_freq_khz-master/tsc_freq_khz.c":22 -1
+     (nil))
+(call_insn 14 13 15 2 (set (reg:SI 0 ax)
+        (call (mem:QI (symbol_ref:DI ("sprintf") [flags 0x41] <function_decl 0x7fbc8eeea800 sprintf>) [0 __builtin_sprintf S1 A8])
+            (const_int 0 [0]))) "/home/erik/Dokumente/Studium/Master/Master-Thesis/github/Disk-Cache-Attacks/linux/libs/tsc_freq_khz-master/tsc_freq_khz.c":22 -1
+     (expr_list:REG_EH_REGION (const_int 0 [0])
+        (nil))
+    (expr_list:DI (use (reg:DI 5 di))
+        (expr_list:DI (use (reg:DI 4 si))
+            (expr_list:SI (use (reg:SI 1 dx))
+                (nil)))))
+(insn 15 14 16 2 (set (reg:SI 88 [ _2 ])
+        (reg:SI 0 ax)) "/home/erik/Dokumente/Studium/Master/Master-Thesis/github/Disk-Cache-Attacks/linux/libs/tsc_freq_khz-master/tsc_freq_khz.c":22 -1
+     (nil))
+(debug_insn 16 15 17 2 (debug_marker) "/home/erik/Dokumente/Studium/Master/Master-Thesis/github/Disk-Cache-Attacks/linux/libs/tsc_freq_khz-master/tsc_freq_khz.c":23 -1
+     (nil))
+(insn 17 16 18 2 (set (reg:DI 94 [ r ])
+        (sign_extend:DI (reg:SI 88 [ _2 ]))) "/home/erik/Dokumente/Studium/Master/Master-Thesis/github/Disk-Cache-Attacks/linux/libs/tsc_freq_khz-master/tsc_freq_khz.c":22 -1
+     (nil))
+(insn 18 17 22 2 (set (reg/v:DI 89 [ <retval> ])
+        (reg:DI 94 [ r ])) "/home/erik/Dokumente/Studium/Master/Master-Thesis/github/Disk-Cache-Attacks/linux/libs/tsc_freq_khz-master/tsc_freq_khz.c":23 -1
+     (nil))
+(insn 22 18 23 2 (set (reg/i:DI 0 ax)
+        (reg/v:DI 89 [ <retval> ])) "/home/erik/Dokumente/Studium/Master/Master-Thesis/github/Disk-Cache-Attacks/linux/libs/tsc_freq_khz-master/tsc_freq_khz.c":24 -1
+     (nil))
+(insn 23 22 0 2 (use (reg/i:DI 0 ax)) "/home/erik/Dokumente/Studium/Master/Master-Thesis/github/Disk-Cache-Attacks/linux/libs/tsc_freq_khz-master/tsc_freq_khz.c":24 -1
+     (nil))
+
+;; Function tsc_khz_init (tsc_khz_init, funcdef_no=1725, decl_uid=23436, cgraph_uid=1800, symbol_order=1847) (unlikely executed)
+
+
+;; Generating RTL for gimple basic block 2
+
+;; Generating RTL for gimple basic block 3
+
+;; Generating RTL for gimple basic block 4
+
+;; Generating RTL for gimple basic block 5
+
+;; Generating RTL for gimple basic block 6
+
+;; Generating RTL for gimple basic block 7
+
+
+try_optimize_cfg iteration 1
+
+Merging block 3 into block 2...
+Merged blocks 2 and 3.
+Merged 2 and 3 without moving.
+Redirecting jump 24 from 8 to 9.
+Redirecting jump 48 from 8 to 9.
+Merging block 8 into block 7...
+Merged blocks 7 and 8.
+Merged 7 and 8 without moving.
+Removing jump 58.
+
+
+try_optimize_cfg iteration 2
+
+
+
+;;
+;; Full RTL generated for this function:
+;;
+(note 1 0 4 NOTE_INSN_DELETED)
+(note 4 1 2 2 [bb 2] NOTE_INSN_BASIC_BLOCK)
+(note 2 4 6 2 NOTE_INSN_FUNCTION_BEG)
+(debug_insn 6 2 7 2 (debug_marker) "/home/erik/Dokumente/Studium/Master/Master-Thesis/github/Disk-Cache-Attacks/linux/libs/tsc_freq_khz-master/tsc_freq_khz.c":39 -1
+     (nil))
+(debug_insn 7 6 8 2 (debug_marker) "/home/erik/Dokumente/Studium/Master/Master-Thesis/github/Disk-Cache-Attacks/linux/libs/tsc_freq_khz-master/tsc_freq_khz.c":40 -1
+     (nil))
+(debug_insn 8 7 9 2 (debug_marker) "/home/erik/Dokumente/Studium/Master/Master-Thesis/github/Disk-Cache-Attacks/linux/libs/tsc_freq_khz-master/tsc_freq_khz.c":41 -1
+     (nil))
+(insn 9 8 10 2 (set (reg:DI 5 di)
+        (symbol_ref/f:DI ("*.LC1") [flags 0x2] <var_decl 0x7fbc8d792090 *.LC1>)) "/home/erik/Dokumente/Studium/Master/Master-Thesis/github/Disk-Cache-Attacks/linux/libs/tsc_freq_khz-master/tsc_freq_khz.c":41 -1
+     (nil))
+(call_insn 10 9 11 2 (set (reg:SI 0 ax)
+        (call (mem:QI (symbol_ref:DI ("printk") [flags 0x41] <function_decl 0x7fbc8edab800 printk>) [0 printk S1 A8])
+            (const_int 0 [0]))) "/home/erik/Dokumente/Studium/Master/Master-Thesis/github/Disk-Cache-Attacks/linux/libs/tsc_freq_khz-master/tsc_freq_khz.c":41 -1
+     (nil)
+    (expr_list:DI (use (reg:DI 5 di))
+        (nil)))
+(debug_insn 11 10 12 2 (debug_marker) "/home/erik/Dokumente/Studium/Master/Master-Thesis/github/Disk-Cache-Attacks/linux/libs/tsc_freq_khz-master/tsc_freq_khz.c":43 -1
+     (nil))
+(insn 12 11 13 2 (set (reg:SI 5 di)
+        (const_int 0 [0])) "/home/erik/Dokumente/Studium/Master/Master-Thesis/github/Disk-Cache-Attacks/linux/libs/tsc_freq_khz-master/tsc_freq_khz.c":43 -1
+     (nil))
+(call_insn 13 12 14 2 (set (reg:DI 0 ax)
+        (call (mem:QI (symbol_ref:DI ("get_cpu_device") [flags 0x41] <function_decl 0x7fbc8dac3f00 get_cpu_device>) [0 get_cpu_device S1 A8])
+            (const_int 0 [0]))) "/home/erik/Dokumente/Studium/Master/Master-Thesis/github/Disk-Cache-Attacks/linux/libs/tsc_freq_khz-master/tsc_freq_khz.c":43 -1
+     (nil)
+    (expr_list:SI (use (reg:SI 5 di))
+        (nil)))
+(insn 14 13 15 2 (set (reg/v/f:DI 88 [ dev ])
+        (reg:DI 0 ax)) "/home/erik/Dokumente/Studium/Master/Master-Thesis/github/Disk-Cache-Attacks/linux/libs/tsc_freq_khz-master/tsc_freq_khz.c":43 -1
+     (nil))
+(debug_insn 15 14 16 2 (debug_marker) "/home/erik/Dokumente/Studium/Master/Master-Thesis/github/Disk-Cache-Attacks/linux/libs/tsc_freq_khz-master/tsc_freq_khz.c":44 -1
+     (nil))
+(insn 16 15 17 2 (set (reg:CCZ 17 flags)
+        (compare:CCZ (reg/v/f:DI 88 [ dev ])
+            (const_int 0 [0]))) "/home/erik/Dokumente/Studium/Master/Master-Thesis/github/Disk-Cache-Attacks/linux/libs/tsc_freq_khz-master/tsc_freq_khz.c":44 -1
+     (nil))
+(jump_insn 17 16 18 2 (set (pc)
+        (if_then_else (ne (reg:CCZ 17 flags)
+                (const_int 0 [0]))
+            (label_ref 26)
+            (pc))) "/home/erik/Dokumente/Studium/Master/Master-Thesis/github/Disk-Cache-Attacks/linux/libs/tsc_freq_khz-master/tsc_freq_khz.c":44 -1
+     (int_list:REG_BR_PROB 1064400276 (nil))
+ -> 26)
+(note 18 17 19 4 [bb 4] NOTE_INSN_BASIC_BLOCK)
+(debug_insn 19 18 20 4 (debug_marker) "/home/erik/Dokumente/Studium/Master/Master-Thesis/github/Disk-Cache-Attacks/linux/libs/tsc_freq_khz-master/tsc_freq_khz.c":45 -1
+     (nil))
+(insn 20 19 21 4 (set (reg:SI 4 si)
+        (const_int 0 [0])) "/home/erik/Dokumente/Studium/Master/Master-Thesis/github/Disk-Cache-Attacks/linux/libs/tsc_freq_khz-master/tsc_freq_khz.c":45 -1
+     (nil))
+(insn 21 20 22 4 (set (reg:DI 5 di)
+        (symbol_ref/f:DI ("*.LC2") [flags 0x2] <var_decl 0x7fbc8d792120 *.LC2>)) "/home/erik/Dokumente/Studium/Master/Master-Thesis/github/Disk-Cache-Attacks/linux/libs/tsc_freq_khz-master/tsc_freq_khz.c":45 -1
+     (nil))
+(call_insn 22 21 23 4 (set (reg:SI 0 ax)
+        (call (mem:QI (symbol_ref:DI ("printk") [flags 0x41] <function_decl 0x7fbc8edab800 printk>) [0 printk S1 A8])
+            (const_int 0 [0]))) "/home/erik/Dokumente/Studium/Master/Master-Thesis/github/Disk-Cache-Attacks/linux/libs/tsc_freq_khz-master/tsc_freq_khz.c":45 -1
+     (nil)
+    (expr_list:DI (use (reg:DI 5 di))
+        (expr_list:SI (use (reg:SI 4 si))
+            (nil))))
+(debug_insn 23 22 3 4 (debug_marker) "/home/erik/Dokumente/Studium/Master/Master-Thesis/github/Disk-Cache-Attacks/linux/libs/tsc_freq_khz-master/tsc_freq_khz.c":46 -1
+     (nil))
+(insn 3 23 24 4 (set (reg/v:SI 89 [ <retval> ])
+        (const_int -2 [0xfffffffffffffffe])) "/home/erik/Dokumente/Studium/Master/Master-Thesis/github/Disk-Cache-Attacks/linux/libs/tsc_freq_khz-master/tsc_freq_khz.c":46 -1
+     (nil))
+(jump_insn 24 3 25 4 (set (pc)
+        (label_ref:DI 60)) 683 {jump}
+     (nil)
+ -> 60)
+(barrier 25 24 26)
+(code_label 26 25 27 5 7 (nil) [1 uses])
+(note 27 26 28 5 [bb 5] NOTE_INSN_BASIC_BLOCK)
+(debug_insn 28 27 29 5 (debug_marker) "/home/erik/Dokumente/Studium/Master/Master-Thesis/github/Disk-Cache-Attacks/linux/libs/tsc_freq_khz-master/tsc_freq_khz.c":48 -1
+     (nil))
+(insn 29 28 30 5 (set (reg:DI 5 di)
+        (symbol_ref/f:DI ("*.LC3") [flags 0x2] <var_decl 0x7fbc8d7921b0 *.LC3>)) "/home/erik/Dokumente/Studium/Master/Master-Thesis/github/Disk-Cache-Attacks/linux/libs/tsc_freq_khz-master/tsc_freq_khz.c":48 -1
+     (nil))
+(call_insn 30 29 31 5 (set (reg:SI 0 ax)
+        (call (mem:QI (symbol_ref:DI ("printk") [flags 0x41] <function_decl 0x7fbc8edab800 printk>) [0 printk S1 A8])
+            (const_int 0 [0]))) "/home/erik/Dokumente/Studium/Master/Master-Thesis/github/Disk-Cache-Attacks/linux/libs/tsc_freq_khz-master/tsc_freq_khz.c":48 -1
+     (nil)
+    (expr_list:DI (use (reg:DI 5 di))
+        (nil)))
+(debug_insn 31 30 32 5 (debug_marker) "/home/erik/Dokumente/Studium/Master/Master-Thesis/github/Disk-Cache-Attacks/linux/libs/tsc_freq_khz-master/tsc_freq_khz.c":49 -1
+     (nil))
+(debug_insn 32 31 33 5 (debug_marker:BLK) "/home/erik/Dokumente/Studium/Master/Master-Thesis/github/Disk-Cache-Attacks/linux/libs/tsc_freq_khz-master/tsc_freq_khz.c":49 -1
+     (nil))
+(debug_insn 33 32 34 5 (debug_marker) "./include/linux/sysfs.h":513 -1
+     (nil))
+(insn 34 33 35 5 (parallel [
+            (set (reg:DI 90)
+                (plus:DI (reg/v/f:DI 88 [ dev ])
+                    (const_int 16 [0x10])))
+            (clobber (reg:CC 17 flags))
+        ]) "/home/erik/Dokumente/Studium/Master/Master-Thesis/github/Disk-Cache-Attacks/linux/libs/tsc_freq_khz-master/tsc_freq_khz.c":49 -1
+     (nil))
+(insn 35 34 36 5 (set (reg:DI 1 dx)
+        (const_int 0 [0])) "./include/linux/sysfs.h":513 -1
+     (nil))
+(insn 36 35 37 5 (set (reg:DI 4 si)
+        (symbol_ref:DI ("tsc_freq_khz_attribute") [flags 0x2] <var_decl 0x7fbc8d75e1b0 tsc_freq_khz_attribute>)) "./include/linux/sysfs.h":513 -1
+     (nil))
+(insn 37 36 38 5 (set (reg:DI 5 di)
+        (reg:DI 90)) "./include/linux/sysfs.h":513 -1
+     (nil))
+(call_insn 38 37 39 5 (set (reg:SI 0 ax)
+        (call (mem:QI (symbol_ref:DI ("sysfs_create_file_ns") [flags 0x41] <function_decl 0x7fbc8dc86d00 sysfs_create_file_ns>) [0 sysfs_create_file_ns S1 A8])
+            (const_int 0 [0]))) "./include/linux/sysfs.h":513 -1
+     (nil)
+    (expr_list:DI (use (reg:DI 5 di))
+        (expr_list:DI (use (reg:DI 4 si))
+            (expr_list:DI (use (reg:DI 1 dx))
+                (nil)))))
+(insn 39 38 40 5 (set (reg/v:SI 89 [ <retval> ])
+        (reg:SI 0 ax)) "./include/linux/sysfs.h":513 -1
+     (nil))
+(debug_insn 40 39 41 5 (debug_marker) "/home/erik/Dokumente/Studium/Master/Master-Thesis/github/Disk-Cache-Attacks/linux/libs/tsc_freq_khz-master/tsc_freq_khz.c":50 -1
+     (nil))
+(insn 41 40 42 5 (set (reg:CCZ 17 flags)
+        (compare:CCZ (reg/v:SI 89 [ <retval> ])
+            (const_int 0 [0]))) "/home/erik/Dokumente/Studium/Master/Master-Thesis/github/Disk-Cache-Attacks/linux/libs/tsc_freq_khz-master/tsc_freq_khz.c":50 -1
+     (nil))
+(jump_insn 42 41 43 5 (set (pc)
+        (if_then_else (eq (reg:CCZ 17 flags)
+                (const_int 0 [0]))
+            (label_ref 50)
+            (pc))) "/home/erik/Dokumente/Studium/Master/Master-Thesis/github/Disk-Cache-Attacks/linux/libs/tsc_freq_khz-master/tsc_freq_khz.c":50 -1
+     (int_list:REG_BR_PROB 536870916 (nil))
+ -> 50)
+(note 43 42 44 6 [bb 6] NOTE_INSN_BASIC_BLOCK)
+(debug_insn 44 43 45 6 (debug_marker) "/home/erik/Dokumente/Studium/Master/Master-Thesis/github/Disk-Cache-Attacks/linux/libs/tsc_freq_khz-master/tsc_freq_khz.c":51 -1
+     (nil))
+(insn 45 44 46 6 (set (reg:SI 4 si)
+        (reg/v:SI 89 [ <retval> ])) "/home/erik/Dokumente/Studium/Master/Master-Thesis/github/Disk-Cache-Attacks/linux/libs/tsc_freq_khz-master/tsc_freq_khz.c":51 -1
+     (nil))
+(insn 46 45 47 6 (set (reg:DI 5 di)
+        (symbol_ref/f:DI ("*.LC4") [flags 0x2] <var_decl 0x7fbc8d792240 *.LC4>)) "/home/erik/Dokumente/Studium/Master/Master-Thesis/github/Disk-Cache-Attacks/linux/libs/tsc_freq_khz-master/tsc_freq_khz.c":51 -1
+     (nil))
+(call_insn 47 46 48 6 (set (reg:SI 0 ax)
+        (call (mem:QI (symbol_ref:DI ("printk") [flags 0x41] <function_decl 0x7fbc8edab800 printk>) [0 printk S1 A8])
+            (const_int 0 [0]))) "/home/erik/Dokumente/Studium/Master/Master-Thesis/github/Disk-Cache-Attacks/linux/libs/tsc_freq_khz-master/tsc_freq_khz.c":51 -1
+     (nil)
+    (expr_list:DI (use (reg:DI 5 di))
+        (expr_list:SI (use (reg:SI 4 si))
+            (nil))))
+(jump_insn 48 47 49 6 (set (pc)
+        (label_ref:DI 60)) 683 {jump}
+     (nil)
+ -> 60)
+(barrier 49 48 50)
+(code_label 50 49 51 7 9 (nil) [1 uses])
+(note 51 50 52 7 [bb 7] NOTE_INSN_BASIC_BLOCK)
+(debug_insn 52 51 53 7 (debug_marker) "/home/erik/Dokumente/Studium/Master/Master-Thesis/github/Disk-Cache-Attacks/linux/libs/tsc_freq_khz-master/tsc_freq_khz.c":54 -1
+     (nil))
+(insn 53 52 54 7 (set (reg:DI 5 di)
+        (symbol_ref/f:DI ("*.LC5") [flags 0x2] <var_decl 0x7fbc8d7922d0 *.LC5>)) "/home/erik/Dokumente/Studium/Master/Master-Thesis/github/Disk-Cache-Attacks/linux/libs/tsc_freq_khz-master/tsc_freq_khz.c":54 -1
+     (nil))
+(call_insn 54 53 57 7 (set (reg:SI 0 ax)
+        (call (mem:QI (symbol_ref:DI ("printk") [flags 0x41] <function_decl 0x7fbc8edab800 printk>) [0 printk S1 A8])
+            (const_int 0 [0]))) "/home/erik/Dokumente/Studium/Master/Master-Thesis/github/Disk-Cache-Attacks/linux/libs/tsc_freq_khz-master/tsc_freq_khz.c":54 -1
+     (nil)
+    (expr_list:DI (use (reg:DI 5 di))
+        (nil)))
+(debug_insn 57 54 60 7 (debug_marker) "/home/erik/Dokumente/Studium/Master/Master-Thesis/github/Disk-Cache-Attacks/linux/libs/tsc_freq_khz-master/tsc_freq_khz.c":58 -1
+     (nil))
+(code_label 60 57 63 9 6 (nil) [2 uses])
+(note 63 60 61 9 [bb 9] NOTE_INSN_BASIC_BLOCK)
+(insn 61 63 62 9 (set (reg/i:SI 0 ax)
+        (reg/v:SI 89 [ <retval> ])) "/home/erik/Dokumente/Studium/Master/Master-Thesis/github/Disk-Cache-Attacks/linux/libs/tsc_freq_khz-master/tsc_freq_khz.c":59 -1
+     (nil))
+(insn 62 61 0 9 (use (reg/i:SI 0 ax)) "/home/erik/Dokumente/Studium/Master/Master-Thesis/github/Disk-Cache-Attacks/linux/libs/tsc_freq_khz-master/tsc_freq_khz.c":59 -1
+     (nil))
+
+;; Function tsc_khz_exit (tsc_khz_exit, funcdef_no=1726, decl_uid=23441, cgraph_uid=1801, symbol_order=1848) (unlikely executed)
+
+
+;; Generating RTL for gimple basic block 2
+
+;; Generating RTL for gimple basic block 3
+
+;; Generating RTL for gimple basic block 4
+
+;; Generating RTL for gimple basic block 5
+
+
+try_optimize_cfg iteration 1
+
+Merging block 3 into block 2...
+Merged blocks 2 and 3.
+Merged 2 and 3 without moving.
+Redirecting jump 22 from 6 to 7.
+Merging block 6 into block 5...
+Merged blocks 5 and 6.
+Merged 5 and 6 without moving.
+
+
+try_optimize_cfg iteration 2
+
+
+
+;;
+;; Full RTL generated for this function:
+;;
+(note 1 0 3 NOTE_INSN_DELETED)
+(note 3 1 2 2 [bb 2] NOTE_INSN_BASIC_BLOCK)
+(note 2 3 5 2 NOTE_INSN_FUNCTION_BEG)
+(debug_insn 5 2 6 2 (debug_marker) "/home/erik/Dokumente/Studium/Master/Master-Thesis/github/Disk-Cache-Attacks/linux/libs/tsc_freq_khz-master/tsc_freq_khz.c":62 -1
+     (nil))
+(debug_insn 6 5 7 2 (debug_marker) "/home/erik/Dokumente/Studium/Master/Master-Thesis/github/Disk-Cache-Attacks/linux/libs/tsc_freq_khz-master/tsc_freq_khz.c":63 -1
+     (nil))
+(insn 7 6 8 2 (set (reg:DI 5 di)
+        (symbol_ref/f:DI ("*.LC6") [flags 0x2] <var_decl 0x7fbc8d792ab0 *.LC6>)) "/home/erik/Dokumente/Studium/Master/Master-Thesis/github/Disk-Cache-Attacks/linux/libs/tsc_freq_khz-master/tsc_freq_khz.c":63 -1
+     (nil))
+(call_insn 8 7 9 2 (set (reg:SI 0 ax)
+        (call (mem:QI (symbol_ref:DI ("printk") [flags 0x41] <function_decl 0x7fbc8edab800 printk>) [0 printk S1 A8])
+            (const_int 0 [0]))) "/home/erik/Dokumente/Studium/Master/Master-Thesis/github/Disk-Cache-Attacks/linux/libs/tsc_freq_khz-master/tsc_freq_khz.c":63 -1
+     (nil)
+    (expr_list:DI (use (reg:DI 5 di))
+        (nil)))
+(debug_insn 9 8 10 2 (debug_marker) "/home/erik/Dokumente/Studium/Master/Master-Thesis/github/Disk-Cache-Attacks/linux/libs/tsc_freq_khz-master/tsc_freq_khz.c":64 -1
+     (nil))
+(insn 10 9 11 2 (set (reg:SI 5 di)
+        (const_int 0 [0])) "/home/erik/Dokumente/Studium/Master/Master-Thesis/github/Disk-Cache-Attacks/linux/libs/tsc_freq_khz-master/tsc_freq_khz.c":64 -1
+     (nil))
+(call_insn 11 10 12 2 (set (reg:DI 0 ax)
+        (call (mem:QI (symbol_ref:DI ("get_cpu_device") [flags 0x41] <function_decl 0x7fbc8dac3f00 get_cpu_device>) [0 get_cpu_device S1 A8])
+            (const_int 0 [0]))) "/home/erik/Dokumente/Studium/Master/Master-Thesis/github/Disk-Cache-Attacks/linux/libs/tsc_freq_khz-master/tsc_freq_khz.c":64 -1
+     (nil)
+    (expr_list:SI (use (reg:SI 5 di))
+        (nil)))
+(insn 12 11 13 2 (set (reg/v/f:DI 88 [ dev ])
+        (reg:DI 0 ax)) "/home/erik/Dokumente/Studium/Master/Master-Thesis/github/Disk-Cache-Attacks/linux/libs/tsc_freq_khz-master/tsc_freq_khz.c":64 -1
+     (nil))
+(debug_insn 13 12 14 2 (debug_marker) "/home/erik/Dokumente/Studium/Master/Master-Thesis/github/Disk-Cache-Attacks/linux/libs/tsc_freq_khz-master/tsc_freq_khz.c":65 -1
+     (nil))
+(insn 14 13 15 2 (set (reg:CCZ 17 flags)
+        (compare:CCZ (reg/v/f:DI 88 [ dev ])
+            (const_int 0 [0]))) "/home/erik/Dokumente/Studium/Master/Master-Thesis/github/Disk-Cache-Attacks/linux/libs/tsc_freq_khz-master/tsc_freq_khz.c":65 -1
+     (nil))
+(jump_insn 15 14 16 2 (set (pc)
+        (if_then_else (ne (reg:CCZ 17 flags)
+                (const_int 0 [0]))
+            (label_ref 24)
+            (pc))) "/home/erik/Dokumente/Studium/Master/Master-Thesis/github/Disk-Cache-Attacks/linux/libs/tsc_freq_khz-master/tsc_freq_khz.c":65 -1
+     (int_list:REG_BR_PROB 1073312332 (nil))
+ -> 24)
+(note 16 15 17 4 [bb 4] NOTE_INSN_BASIC_BLOCK)
+(debug_insn 17 16 18 4 (debug_marker) "/home/erik/Dokumente/Studium/Master/Master-Thesis/github/Disk-Cache-Attacks/linux/libs/tsc_freq_khz-master/tsc_freq_khz.c":66 -1
+     (nil))
+(insn 18 17 19 4 (set (reg:SI 4 si)
+        (const_int 0 [0])) "/home/erik/Dokumente/Studium/Master/Master-Thesis/github/Disk-Cache-Attacks/linux/libs/tsc_freq_khz-master/tsc_freq_khz.c":66 -1
+     (nil))
+(insn 19 18 20 4 (set (reg:DI 5 di)
+        (symbol_ref/f:DI ("*.LC2") [flags 0x2] <var_decl 0x7fbc8d792120 *.LC2>)) "/home/erik/Dokumente/Studium/Master/Master-Thesis/github/Disk-Cache-Attacks/linux/libs/tsc_freq_khz-master/tsc_freq_khz.c":66 -1
+     (nil))
+(call_insn 20 19 21 4 (set (reg:SI 0 ax)
+        (call (mem:QI (symbol_ref:DI ("printk") [flags 0x41] <function_decl 0x7fbc8edab800 printk>) [0 printk S1 A8])
+            (const_int 0 [0]))) "/home/erik/Dokumente/Studium/Master/Master-Thesis/github/Disk-Cache-Attacks/linux/libs/tsc_freq_khz-master/tsc_freq_khz.c":66 -1
+     (nil)
+    (expr_list:DI (use (reg:DI 5 di))
+        (expr_list:SI (use (reg:SI 4 si))
+            (nil))))
+(debug_insn 21 20 22 4 (debug_marker) "/home/erik/Dokumente/Studium/Master/Master-Thesis/github/Disk-Cache-Attacks/linux/libs/tsc_freq_khz-master/tsc_freq_khz.c":67 -1
+     (nil))
+(jump_insn 22 21 23 4 (set (pc)
+        (label_ref:DI 36)) "/home/erik/Dokumente/Studium/Master/Master-Thesis/github/Disk-Cache-Attacks/linux/libs/tsc_freq_khz-master/tsc_freq_khz.c":67 683 {jump}
+     (nil)
+ -> 36)
+(barrier 23 22 24)
+(code_label 24 23 25 5 12 (nil) [1 uses])
+(note 25 24 26 5 [bb 5] NOTE_INSN_BASIC_BLOCK)
+(debug_insn 26 25 27 5 (debug_marker) "/home/erik/Dokumente/Studium/Master/Master-Thesis/github/Disk-Cache-Attacks/linux/libs/tsc_freq_khz-master/tsc_freq_khz.c":69 -1
+     (nil))
+(debug_insn 27 26 28 5 (debug_marker:BLK) "/home/erik/Dokumente/Studium/Master/Master-Thesis/github/Disk-Cache-Attacks/linux/libs/tsc_freq_khz-master/tsc_freq_khz.c":69 -1
+     (nil))
+(debug_insn 28 27 29 5 (debug_marker) "./include/linux/sysfs.h":519 -1
+     (nil))
+(insn 29 28 30 5 (parallel [
+            (set (reg:DI 89)
+                (plus:DI (reg/v/f:DI 88 [ dev ])
+                    (const_int 16 [0x10])))
+            (clobber (reg:CC 17 flags))
+        ]) "/home/erik/Dokumente/Studium/Master/Master-Thesis/github/Disk-Cache-Attacks/linux/libs/tsc_freq_khz-master/tsc_freq_khz.c":69 -1
+     (nil))
+(insn 30 29 31 5 (set (reg:DI 1 dx)
+        (const_int 0 [0])) "./include/linux/sysfs.h":519 -1
+     (nil))
+(insn 31 30 32 5 (set (reg:DI 4 si)
+        (symbol_ref:DI ("tsc_freq_khz_attribute") [flags 0x2] <var_decl 0x7fbc8d75e1b0 tsc_freq_khz_attribute>)) "./include/linux/sysfs.h":519 -1
+     (nil))
+(insn 32 31 33 5 (set (reg:DI 5 di)
+        (reg:DI 89)) "./include/linux/sysfs.h":519 -1
+     (nil))
+(call_insn 33 32 36 5 (call (mem:QI (symbol_ref:DI ("sysfs_remove_file_ns") [flags 0x41] <function_decl 0x7fbc8dca8200 sysfs_remove_file_ns>) [0 sysfs_remove_file_ns S1 A8])
+        (const_int 0 [0])) "./include/linux/sysfs.h":519 -1
+     (nil)
+    (expr_list:DI (use (reg:DI 5 di))
+        (expr_list:DI (use (reg:DI 4 si))
+            (expr_list:DI (use (reg:DI 1 dx))
+                (nil)))))
+(code_label 36 33 37 7 11 (nil) [1 uses])
+(note 37 36 0 7 [bb 7] NOTE_INSN_BASIC_BLOCK)

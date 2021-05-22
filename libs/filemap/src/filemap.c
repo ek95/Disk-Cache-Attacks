@@ -1,6 +1,6 @@
 #define _GNU_SOURCE
 #define _DEFAULT_SOURCE
-#define _WIN32_WINNT 0x0602
+#define _WIN32_WINNT 0x0a00
 
 #include "filemap.h"
 #include "tsc_bench.h"
@@ -21,6 +21,13 @@
 #include <unistd.h>
 #elif defined(_WIN32)
 #include "Windows.h"
+#include "psapi.h"
+#include <Shlwapi.h>
+#include <ntstatus.h>
+// missing in mingw64
+#ifndef FILE_MAP_LARGE_PAGES
+#define FILE_MAP_LARGE_PAGES 0x20000000
+#endif
 #endif
 
 // forward declarations
@@ -369,8 +376,9 @@ static inline DWORD fileFlags2createFileAccess(int file_flags)
 {
   DWORD flags = 0;
 
-  flags |= (mapping_flags & FILE_ACCESS_READ) ? GENERIC_READ : 0;
-  flags |= (mapping_flags & FILE_ACCESS_WRITE) ? GENERIC_WRITE : 0;
+  flags |= (file_flags & FILE_ACCESS_READ) ? GENERIC_READ : 0;
+  flags |= (file_flags & FILE_ACCESS_WRITE) ? GENERIC_WRITE : 0;
+  flags |= (file_flags & FILE_ACCESS_EXECUTE) ? GENERIC_EXECUTE : 0;
 
   return flags;
 }
@@ -437,20 +445,20 @@ int mapFile(FileMapping *file_mapping, const char *file_path, int file_flags, in
   LARGE_INTEGER file_size;
 
   // open file (if not already done)
-  if (file_mapping->intern_.file_handle_ == INVALID_HANDLE_VALUE)
+  if (file_mapping->internal_.file_handle_ == INVALID_HANDLE_VALUE)
   {
     // NOTE for attack it is not necessary that multiple processes open the same file for write access
     //  -> FILE_SHARE_READ
-    file_mapping->intern_.file_handle_ = CreateFileA(file_name, fileFlags2createFileAccess(file_flags),
+    file_mapping->internal_.file_handle_ = CreateFileA(file_path, fileFlags2createFileAccess(file_flags),
                                                      FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL | fileFlags2createFileFlags(file_flags), NULL);
-    if (file_mapping->intern_.file_handle_ == INVALID_HANDLE_VALUE)
+    if (file_mapping->internal_.file_handle_ == INVALID_HANDLE_VALUE)
     {
       goto error;
     }
   }
 
   // get file size
-  if (!GetFileSizeEx(file_mapping->intern_.file_handle_, &file_size))
+  if (!GetFileSizeEx(file_mapping->internal_.file_handle_, &file_size))
   {
     goto error;
   }
@@ -458,13 +466,13 @@ int mapFile(FileMapping *file_mapping, const char *file_path, int file_flags, in
   file_mapping->size_ = file_size.QuadPart;
   file_mapping->size_pages_ = ((file_mapping->size_ + PAGE_SIZE - 1) / PAGE_SIZE);
   // map file
-  file_mapping->intern_.mapping_handle_ = CreateFileMappingA(file_mapping->intern_.file_handle_, NULL,
+  file_mapping->internal_.mapping_handle_ = CreateFileMappingA(file_mapping->internal_.file_handle_, NULL,
                                                              mappingFlags2createFileMappingProtection(mapping_flags), 0, 0, NULL);
-  if (file_mapping->intern_.mapping_handle_ == NULL)
+  if (file_mapping->internal_.mapping_handle_ == NULL)
   {
     goto error;
   }
-  file_mapping->addr_ = MapViewOfFile(file_mapping->intern_.mapping_handle_,
+  file_mapping->addr_ = MapViewOfFile(file_mapping->internal_.mapping_handle_,
                                       mappingFlags2mapViewOfFileAccess(mapping_flags), 0, 0, 0);
   if (file_mapping->addr_ == NULL)
   {
@@ -510,24 +518,24 @@ static int adviseFileUsageIntern(FileMapping *file_mapping, size_t offset, size_
 
 static void closeMappingOnlyIntern(FileMapping *file_mapping)
 {
-  if (file_mapping->intern_.addr_ != NULL)
+  if (file_mapping->addr_ != NULL)
   {
-    UnmapViewOfFile(file_mapping->intern_.addr_);
-    file_mapping->intern_.addr_ = NULL;
+    UnmapViewOfFile(file_mapping->addr_);
+    file_mapping->addr_ = NULL;
   }
-  if (file_mapping->intern_.mapping_handle_ != INVALID_HANDLE_VALUE)
+  if (file_mapping->internal_.mapping_handle_ != INVALID_HANDLE_VALUE)
   {
-    CloseHandle(file_mapping->intern_.mapping_handle_);
-    file_mapping->intern_.mapping_handle_ = INVALID_HANDLE_VALUE;
+    CloseHandle(file_mapping->internal_.mapping_handle_);
+    file_mapping->internal_.mapping_handle_ = INVALID_HANDLE_VALUE;
   }
 }
 
 static void closeFileMappingIntern(FileMapping *file_mapping)
 {
-  if (file_mapping->intern_.file_handle_ != INVALID_HANDLE_VALUE)
+  if (file_mapping->internal_.file_handle_ != INVALID_HANDLE_VALUE)
   {
-    CloseHandle(file_mapping->intern_.file_handle_);
-    file_mapping->intern_.file_handle_ = INVALID_HANDLE_VALUE;
+    CloseHandle(file_mapping->internal_.file_handle_);
+    file_mapping->internal_.file_handle_ = INVALID_HANDLE_VALUE;
   }
 }
 
@@ -609,7 +617,8 @@ static int doFcStateQueryWorkingSetEx(FileMapping *file_mapping, size_t offset, 
   PSAPI_WORKING_SET_EX_INFORMATION *ws_infos = NULL;
   size_t offset_pages = offset / PAGE_SIZE;
   size_t len_pages = len / PAGE_SIZE;
-  volatile uint8_t tmp;
+  volatile uint8_t tmp = 0;
+  (void) tmp;
 
   // no mapping
   if (file_mapping->addr_ == NULL)
@@ -643,7 +652,6 @@ static int doFcStateQueryWorkingSetEx(FileMapping *file_mapping, size_t offset, 
   memset(vec, 0, sizeof(uint8_t) * len_pages);
   for (size_t p = 0; p < len_pages; p++)
   {
-    uint8_t *addr = (uint8_t *)file_mapping->addr_ + (offset_pages + p) * PAGE_SIZE;
     if (!ws_infos[p].VirtualAttributes.Valid || ws_infos[p].VirtualAttributes.ShareCount < 1)
     {
       free(ws_infos);
