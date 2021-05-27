@@ -72,88 +72,126 @@ def createEventPageHitHeatmap(file_path, file_offset, hit_data_raw, max_val,
         plt.show()
     plt.close()
 
-    
+
+def targetGetPcMappings(pid):
+    # freeze process (for parsing maps, getting pfns)
+    process_control = vmtools.ProcessControl(pid)
+    process_control.freeze()
+
+    # get read-only, file-backed mappings 
+    #   -> read-only data, shared libraries
+    #   -> everything that for sure is shared using the page cache
+    maps_reader = vmtools.MapsReader(pid)
+    maps = maps_reader.getMapsByPermissions(read=True, write=False, only_file=True)
+
+    # initialise page mapping reader 
+    page_map_reader = vmtools.PageMapReader(pid)
+    # get pfns for maps 
+    for map in maps:
+        vpn_low = int(map["addresses"][0] / mmap.PAGESIZE)
+        vpn_high = int((map["addresses"][1] + mmap.PAGESIZE - 1) / mmap.PAGESIZE)
+        
+        pfns = []
+        for vpn in range(vpn_low, vpn_high):
+            mapping = page_map_reader.getMapping(vpn)
+            if mapping[0].present:
+                pfns.append(mapping[0].pfn_swap)
+            else:
+                pfns.append(-1)
+        map["pfns"] = pfns
+
+    process_control.resume()
+    return maps
+
+
+def printEventFileOffsets(event_file_offsets, samples):
+    for event_file_offset in event_file_offsets:
+        score_percent = event_file_offset[0] / samples * 100
+        if score_percent > 50: 
+            print("Score: {}%, File: {}, Offset: 0x{:x}".format(event_file_offset[0] / samples * 100, event_file_offset[1], event_file_offset[2]))
+
+
+def doUserEvent():
+    print("Trigger Event...")
+    time.sleep(3)
+    print("STOP") 
+    time.sleep(1)
+    print("!!!") 
+
+
 
 parser = argparse.ArgumentParser(description="Decode '/proc/{pid}/maps' info.")
 parser.add_argument("pid", type=int, help="pid of the target process to attach to")
 parser.add_argument("samples", type=int, help="amount of samples")
-parser.add_argument("--event_function", type=str, help="python expression for generating event")
-parser.add_argument("--event_application", type=str, help="application for simulating event")
-parser.add_argument("--event_user", action="store_true", help="wait until user triggers event")
-parser.add_argument("--event_user_wait", type=int, help="amount of seconds to wait in case of user events")
+parser.add_argument("--event_user", type=str, action="append", metavar=("NAME"), help="user manually trigerrs events")
+#parser.add_argument("--event", type=str, action="append", nargs=2, metavar=("TYPE", "NAME"), help="python expression for generating event")
 args = parser.parse_args()
 pid = args.pid
 
 #print("Processing is started after 5 seconds...")
 #time.sleep(5)
 
-# load phyiscal pages needed for event execution if not already loaded
+# prepare events 
+events = []
 if args.event_user:
-    input("Please execute event a few times and press enter...")
+    events = [ (x, doUserEvent) for x in args.event_user ]
+    input("Please execute events a few times and press enter (warms up page cache)...")
 
-# freeze process (for parsing maps, getting pfns)
-process_control = vmtools.ProcessControl(pid)
-process_control.freeze()
+# get library mappings + pfns
+pc_mappings = targetGetPcMappings(pid)
 
-# get executable, file-backed mappings (executable shared objects - shared libraries)
-maps_reader = vmtools.MapsReader(pid)
-maps = maps_reader.getMapsByPermissions(executable=True, only_file=True)
-
-# initialise page mapping reader 
-page_map_reader = vmtools.PageMapReader(pid)
-
-# get pfns for maps 
-for map in maps:
-    vpn_low = int(map["addresses"][0] / mmap.PAGESIZE)
-    vpn_high = int((map["addresses"][1] + mmap.PAGESIZE - 1) / mmap.PAGESIZE)
-    pfns = []
-    for vpn in range(vpn_low, vpn_high):
-        mapping = page_map_reader.getMapping(vpn)
-        if mapping[0].present:
-            pfns.append(mapping[0].pfn_swap)
-        else:
-            pfns.append(-1)
-    map["pfns"] = pfns
-    map["pfns_accessed_no_event"] = [0] * len(pfns)
-    map["pfns_accessed_event"] =  [0] * len(pfns)
-
-# resume process
-process_control.resume()
+# additional entries for pc_mappings 
+for mapping in pc_mappings:
+    mapping["accessed_pfns_events"] = [[0] * len(events) for _ in range(len(mapping["pfns"]))]
 
 # initialse page usage tracker
 page_usage_tracker = vmtools.PageUsageTracker()
+print("Sampling events:")
+for event_i, event in enumerate(events):
+    print("Sampling event: " + event[0])
+    for _ in tqdm.tqdm(range(args.samples)):
+        # reset
+        for mapping in pc_mappings:
+            page_usage_tracker.resetPfns(mapping["pfns"])
+     
+        # run event function
+        event[1]()
 
-print("Sampling noise floor:")
-for i in tqdm.tqdm(range(args.samples)):
-    # reset
-    for map in maps:
-        page_usage_tracker.resetPfns(map["pfns"])
-    # sampling noise floor
-    if args.event_user:
-        print("Make noise...")
-        time.sleep(3)
-        print("Done")
+        # sample
+        for mapping in pc_mappings:   
+            state = page_usage_tracker.getPfnsState(mapping["pfns"])
+            for off in range(len(state)):
+                mapping["accessed_pfns_events"][off][event_i] += state[off]
 
-    for map in maps:   
-        state = page_usage_tracker.getPfnsState(map["pfns"])
-        for i in range(len(state)):
-            map["pfns_accessed_no_event"][i] += state[i]
+# process data
+# find pages which describe events best
+events_file_offsets = [ [] for _ in range(len(events)) ]
+for mapping in pc_mappings:
+    for off in range(len(mapping["accessed_pfns_events"])):
+        max2events = np.argsort(-np.array(mapping["accessed_pfns_events"][off]))[:2]
+        score = mapping["accessed_pfns_events"][off][max2events[0]] - mapping["accessed_pfns_events"][off][max2events[1]]
+        if score > 0:
+            events_file_offsets[max2events[0]].append((score, mapping["path"] , mapping["addresses"][0] + off * mmap.PAGESIZE, mapping["pfns"][off]))
+# sort + print
+for i, event_file_offsets in enumerate(events_file_offsets): 
+    # sort by score
+    event_file_offsets.sort(key=lambda x: x[0], reverse=True)
+    print("File offset combinations with a score > 50% for event {}:".format(events[i][0]))
+    printEventFileOffsets(event_file_offsets, args.samples)
 
-print("Sampling event:")
-for i in tqdm.tqdm(range(args.samples)):  
-    # reset
-    for map in maps:
-        page_usage_tracker.resetPfns(map["pfns"])
-    # sampling event
-    if args.event_user:
-        print("Trigger event...")
-        time.sleep(3)
-        print("Done")
 
-    for map in maps:   
-        state = page_usage_tracker.getPfnsState(map["pfns"])
-        for i in range(len(state)):
-            map["pfns_accessed_event"][i] += state[i]
+# tracing for event a
+pfn = events_file_offsets[0][0][3]
+page_usage_tracker.resetPfns([pfn])
+while True:
+    state = page_usage_tracker.getPfnsState([pfn])
+    if state[0] == 1:
+        print("DETECTED")
+        page_usage_tracker.resetPfns([pfn])
+    time.sleep(0.001)
+
+
+exit(0)
 
 # calculate difference
 for map in maps:

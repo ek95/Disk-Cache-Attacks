@@ -1,0 +1,6 @@
+clustered page faults
+	-> 8 for data pages
+	-> also 8 for executable pages it seems, but for executables other page ranges are also prefetched (also already upon mapping)
+	
+writing back dirty pages
+	-> 

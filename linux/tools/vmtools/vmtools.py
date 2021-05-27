@@ -1,5 +1,5 @@
 from ctypes import *
-import os 
+import os
 import signal
 
 
@@ -9,7 +9,7 @@ def asClongCompatible(value):
     if value > 2**63 - 1:
         return -(2**64 - value)
     else:
-        return value 
+        return value
 
 
 # ctype extension
@@ -24,8 +24,8 @@ class StructureExt(Structure):
 
 # fs/proc/task_mmu.c
 class PageMapEntry(StructureExt):
-	_fields_ = [("pfn_swap", c_uint64, 55),
-                ("soft_dirty", c_uint64, 1), 
+    _fields_ = [("pfn_swap", c_uint64, 55),
+                ("soft_dirty", c_uint64, 1),
                 ("exclusive", c_uint64, 1),
                 ("zero", c_uint64, 4),
                 ("file_shared", c_uint64, 1),
@@ -40,12 +40,13 @@ PROCESS_MEM_PATH_TEMPLATE = "/proc/{}/mem"
 KPAGEFLAGS_PATH = "/proc/kpageflags"
 PAGE_IDLE_BITMAP_PATH = "/sys/kernel/mm/page_idle/bitmap"
 
+
 class ProcessControl:
-    def __init__(self, pid = None):
-        self.pid_ = pid 
+    def __init__(self, pid=None):
+        self.pid_ = pid
 
     def connect(self, pid):
-        self.pid_ = pid 
+        self.pid_ = pid
 
     def freeze(self):
         # signal SIGSTOP (freeze process)
@@ -56,7 +57,7 @@ class ProcessControl:
                 file.seek(0)
                 status_str = file.read()
                 if status_str.split(" ")[2] == "T":
-                    break 
+                    break
                 os.sched_yield()
 
     def resume(self):
@@ -64,14 +65,14 @@ class ProcessControl:
 
 
 class MapsReader:
-    def __init__(self, pid = None):
-        self.maps_ = None 
+    def __init__(self, pid=None):
+        self.maps_ = None
         if pid is not None:
             self.parse(pid)
 
     def parse(self, pid):
         maps = []
-        with open(PROCESS_MAPS_PATH_TEMPLATE.format(pid), "r") as file: 
+        with open(PROCESS_MAPS_PATH_TEMPLATE.format(pid), "r") as file:
             maps_content = file.read()
         maps_lines = maps_content.split("\n")
         for line in maps_lines:
@@ -81,16 +82,16 @@ class MapsReader:
             # process memory regions
             tokens = line.split()
             addresses = [int(token, 16) for token in tokens[0].split("-")]
-            maps.append({"addresses": addresses, "size": addresses[1] - addresses[0], 
-                         "perms": tokens[1], "file_offset": int(tokens[2], 16), 
+            maps.append({"addresses": addresses, "size": addresses[1] - addresses[0],
+                         "perms": tokens[1], "file_offset": int(tokens[2], 16),
                          "inode": int(tokens[4]), "path": "" if len(tokens) < 6 else tokens[5]})
         self.maps_ = maps
 
     def getMapsBySize(self, size, only_file=False, only_anon=False):
         found = []
         for map in self.maps_:
-            if(map["size"] == size and 
-               (not only_anon or map["inode"] == 0) and 
+            if(map["size"] == size and
+               (not only_anon or map["inode"] == 0) and
                (not only_file or map["inode"] != 0)):
                 found.append(map)
         return found
@@ -99,20 +100,30 @@ class MapsReader:
         found = []
         for map in self.maps_:
             if(addr >= map["addresses"][0] and addr <= map["addresses"][1]
-               and (not only_anon or map["inode"] == 0) 
+               and (not only_anon or map["inode"] == 0)
                and (not only_file or map["inode"] != 0)):
                 found.append(map)
         return found
 
-    def getMapsByPermissions(self, read=False, write=False, executable=False, only_file=False, only_anon=False):
+    def getMapsByPermissions(self, read=None, write=None, executable=None, only_file=False, only_anon=False):
         found = []
         for map in self.maps_:
-            if((not read or map["perms"][0] == 'r') and 
-               (not write or map["perms"][1] == 'w') and
-               (not executable or map["perms"][2] == 'x') and 
-               (not only_anon or map["inode"] == 0) and 
-               (not only_file or map["inode"] != 0)):
-                found.append(map)
+            if((read == True and map["perms"][0] != 'r') or
+               (read == False and map["perms"][0] != '-')):
+                continue
+            if((write == True and map["perms"][1] != 'w') or
+               (write == False and map["perms"][1] != '-')):
+                continue
+            if((executable == True and map["perms"][2] != 'x') or
+               (executable == False and map["perms"][2] != '-')):
+                continue
+
+            if only_anon and map["inode"] != 0:
+                continue
+            if only_file and map["inode"] == 0:
+                continue
+
+            found.append(map)
         return found
 
     def getMaps(self, only_file=False, only_anon=False):
@@ -121,17 +132,17 @@ class MapsReader:
 
         found = []
         for map in self.maps_:
-            if((not only_anon or map["inode"] == 0) and 
+            if((not only_anon or map["inode"] == 0) and
                (not only_file or map["inode"] != 0)):
                 found.append(map)
-                
+
         return found
 
 
 # https://github.com/torvalds/linux/blob/master/Documentation/admin-guide/mm/pagemap.rst
 class PageMapReader:
-    def __init__(self, pid = None):
-        self.pagemap_fd_ = None 
+    def __init__(self, pid=None):
+        self.pagemap_fd_ = None
         self.kpageflags_fd_ = open(KPAGEFLAGS_PATH, "rb")
         if pid is not None:
             self.connect(pid)
@@ -139,7 +150,8 @@ class PageMapReader:
     def connect(self, pid):
         if self.pagemap_fd_ is not None:
             self.pagemap_fd_.close()
-        self.pagemap_fd_ = open(PROCESS_PAGEMAP_PATH_TEMPLATE.format(pid), "rb")
+        self.pagemap_fd_ = open(
+            PROCESS_PAGEMAP_PATH_TEMPLATE.format(pid), "rb")
 
     def getMapping(self, vpn):
         # read
@@ -148,10 +160,11 @@ class PageMapReader:
         # parse
         pagemap_entry = PageMapEntry()
         pagemap_entry.unpack(data)
-        # get kpageflags - if present 
-        kpageflags = 0 
+        # get kpageflags - if present
+        kpageflags = 0
         if pagemap_entry.present:
-            self.kpageflags_fd_.seek(asClongCompatible(pagemap_entry.pfn_swap * 8))
+            self.kpageflags_fd_.seek(
+                asClongCompatible(pagemap_entry.pfn_swap * 8))
             kpageflags = int.from_bytes(self.kpageflags_fd_.read(8), "little")
         return (pagemap_entry, kpageflags)
 
@@ -161,8 +174,8 @@ class PageMapReader:
 
 
 class MemReader:
-    def __init__(self, pid = None):
-        self.mem_fd_ = None 
+    def __init__(self, pid=None):
+        self.mem_fd_ = None
         if pid is not None:
             self.connect(pid)
 
@@ -224,9 +237,11 @@ class PageUsageTracker:
             if pfn == -1:
                 continue
             # TODO might make problems
-            self.page_idle_bitmap_fd_.seek(asClongCompatible(int(pfn / 64) * 8))
+            self.page_idle_bitmap_fd_.seek(
+                asClongCompatible(int(pfn / 64) * 8))
             # reset page (mark idle)
-            self.page_idle_bitmap_fd_.write((1 << (pfn % 64)).to_bytes(8, "little"))
+            self.page_idle_bitmap_fd_.write(
+                (1 << (pfn % 64)).to_bytes(8, "little"))
 
     def getPfnsState(self, pfns):
         states = []
@@ -235,7 +250,8 @@ class PageUsageTracker:
                 states.append(0)
                 continue
             # TODO might make problems
-            self.page_idle_bitmap_fd_.seek(asClongCompatible(int(pfn / 64) * 8))
+            self.page_idle_bitmap_fd_.seek(
+                asClongCompatible(int(pfn / 64) * 8))
             # read state
             raw = self.page_idle_bitmap_fd_.read(8)
             number = int.from_bytes(raw, "little")
