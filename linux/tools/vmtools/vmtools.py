@@ -142,35 +142,33 @@ class MapsReader:
 # https://github.com/torvalds/linux/blob/master/Documentation/admin-guide/mm/pagemap.rst
 class PageMapReader:
     def __init__(self, pid=None):
-        self.pagemap_fd_ = None
-        self.kpageflags_fd_ = open(KPAGEFLAGS_PATH, "rb")
+        self.pagemap_fd_ = -1
+        self.kpageflags_fd_ = os.open(KPAGEFLAGS_PATH, os.O_RDONLY)
         if pid is not None:
             self.connect(pid)
 
     def connect(self, pid):
-        if self.pagemap_fd_ is not None:
-            self.pagemap_fd_.close()
-        self.pagemap_fd_ = open(
-            PROCESS_PAGEMAP_PATH_TEMPLATE.format(pid), "rb")
+        if self.pagemap_fd_ != -1:
+            os.close(self.pagemap_fd_)
+        self.pagemap_fd_ = os.open(
+            PROCESS_PAGEMAP_PATH_TEMPLATE.format(pid), os.O_RDONLY)
 
     def getMapping(self, vpn):
         # read
-        self.pagemap_fd_.seek(asClongCompatible(vpn * sizeof(PageMapEntry)))
-        data = self.pagemap_fd_.read(sizeof(PageMapEntry))
+        data = os.pread(self.pagemap_fd_, sizeof(PageMapEntry), vpn * sizeof(PageMapEntry))
         # parse
         pagemap_entry = PageMapEntry()
         pagemap_entry.unpack(data)
         # get kpageflags - if present
         kpageflags = 0
         if pagemap_entry.present:
-            self.kpageflags_fd_.seek(
-                asClongCompatible(pagemap_entry.pfn_swap * 8))
-            kpageflags = int.from_bytes(self.kpageflags_fd_.read(8), "little")
+            raw = os.pread( self.kpageflags_fd_, 8, pagemap_entry.pfn_swap * 8)
+            kpageflags = int.from_bytes(raw, "little")
         return (pagemap_entry, kpageflags)
 
     def __del__(self):
-        if self.pagemap_fd_ is not None:
-            self.pagemap_fd_.close()
+        if self.pagemap_fd_ != -1:
+            os.close(self.pagemap_fd_)
 
 
 class MemReader:
@@ -182,16 +180,15 @@ class MemReader:
     def connect(self, pid):
         if self.mem_fd_ is not None:
             self.mem_fd_.close()
-        self.mem_fd_ = open(PROCESS_MEM_PATH_TEMPLATE.format(pid), "rb")
+        self.mem_fd_ = os.open(PROCESS_MEM_PATH_TEMPLATE.format(pid), os.O_RDONLY)
 
     def getMem(self, vaddr, size):
-        self.mem_fd_.seek(asClongCompatible(vaddr))
-        data = self.mem_fd_.read(size)
+        data = os.pread(self.mem_fd_, size, vaddr)
         return data
 
     def __del__(self):
-        if self.mem_fd_ is not None:
-            self.mem_fd_.close()
+        if self.mem_fd_ != -1:
+            os.close(self.mem_fd_)
 
 
 class HexDumpPrinter:
@@ -230,35 +227,33 @@ class HexDumpPrinter:
 
 class PageUsageTracker:
     def __init__(self):
-        self.page_idle_bitmap_fd_ = open(PAGE_IDLE_BITMAP_PATH, "r+b")
+        self.page_idle_bitmap_fd_ = os.open(PAGE_IDLE_BITMAP_PATH, os.O_RDWR)
 
     def resetPfns(self, pfns):
         for pfn in pfns:
             if pfn == -1:
                 continue
-            # TODO might make problems
-            self.page_idle_bitmap_fd_.seek(
-                asClongCompatible(int(pfn / 64) * 8))
             # reset page (mark idle)
-            self.page_idle_bitmap_fd_.write(
-                (1 << (pfn % 64)).to_bytes(8, "little"))
+            offset = int(pfn / 64) * 8
+            bit = pfn % 64
+            value = bytearray(8)
+            value[int(bit / 8)] = 1 << (bit % 8)
+            # alternative value: (1 << (pfn % 64)).to_bytes(8, "little")
+            os.pwrite(self.page_idle_bitmap_fd_, value, offset) 
 
     def getPfnsState(self, pfns):
-        states = []
-        for pfn in pfns:
+        states = [False] * len(pfns)
+        for i, pfn in enumerate(pfns):
             if pfn == -1:
-                states.append(0)
                 continue
-            # TODO might make problems
-            self.page_idle_bitmap_fd_.seek(
-                asClongCompatible(int(pfn / 64) * 8))
             # read state
-            raw = self.page_idle_bitmap_fd_.read(8)
+            offset = int(pfn / 64) * 8 #offset = asClongCompatible(int(pfn / 64) * 8)
+            raw = os.pread(self.page_idle_bitmap_fd_, 8, offset)
             number = int.from_bytes(raw, "little")
             # check if page was accessed (not idle anymore)
-            states.append(not ((number >> (pfn % 64)) & 1))
+            states[i] = not ((number >> (pfn % 64)) & 1)
         return states
 
     def __del__(self):
-        if self.page_idle_bitmap_fd_ is not None:
-            self.page_idle_bitmap_fd_.close()
+        if self.page_idle_bitmap_fd_ != -1:
+            os.close(self.page_idle_bitmap_fd_)

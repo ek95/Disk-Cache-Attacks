@@ -11,21 +11,15 @@ import matplotlib.pyplot as plt
 import numpy as np
 import os
 import json
+import signal
+import random
+#os.environ["PYNPUT_BACKEND_KEYBOARD"] = "uinput"
+#os.environ["PYNPUT_BACKEND_MOUSE"] = "dummy"
+#from pynput.keyboard import Controller, KeyCode
+import keyboard
+import functools
+import string
 
-
-def argmax(iterable):
-    if len(iterable) == 0:
-        return (None, None)
-
-    current_max = iterable[0] 
-    current_max_i = 0
-    for i in range(len(iterable)):
-        x = iterable[i]
-        if x > current_max:
-            current_max = x 
-            current_max_i = i
-
-    return (current_max, current_max_i)
 
 def createEventPageHitHeatmap(file_path, file_offset, hit_data_raw, max_val, 
                               pages_per_row = 16, show = True, save = False):
@@ -104,14 +98,75 @@ def targetGetPcMappings(pid):
     return maps
 
 
+
+def calcFitScore(event, pfn_state_events, samples):
+    score = max(2 * pfn_state_events[event] - sum(pfn_state_events), 0)
+    return (score, score / samples)
+
+
+def getEventClusterFitness(cluster_pfn_state, samples):
+    raw_cluster = sum(cluster_pfn_state)
+    normalized_cluster = raw_cluster / len(cluster_pfn_state)
+    raw_fitness = max(2 * raw_cluster - sum(cluster_pfn_state), 0)
+    return (raw_fitness, raw_fitness / samples)
+
+
+def processMapping(mapping, samples, cluster_size, fit_score_threshold, event_to_pfn_mapping, event_pfn_candidates):
+    for off in range(len(mapping["accessed_pfns_events"])):
+        cluster_events = mapping["accessed_pfns_events_argsort"][off][:cluster_size]
+        fitness = getEventClusterFitness(mapping["accessed_pfns_events"][off][cluster_events], samples)
+        if fitness[1] > fit_score_threshold:
+            event_pfn_candidates[cluster_events] += 1
+            event_to_pfn_mapping.append({
+                "events": cluster_events,
+                "fitness": fitness,
+                "path": mapping["path"], 
+                "file_offset": mapping["file_offset"] + off * mmap.PAGESIZE,
+                "current_pfn": mapping["pfns"][off]
+            })
+
+    return
+
+
+def processEventDataSimple(events, pc_mappings, samples, fit_score_threshold):
+    # simple idea -> not very powerful (clustering algorithms, ml would be far more powerful)
+    # but fits well with event-triggered eviction approach (periodic sampling is anyhow not wanted)
+    #   -> we look at the classification problem page-per-page
+    #       -> no detection of higher-order patterns!
+    #   -> we want to have every event covered
+    #   -> pages which accurately classify ONE event are preferred
+    #       -> if not every event is covered, we search for (small) clusters
+    #   -> continue until all events are covered or cluster search reached max. size 
+    event_to_pfn_mapping = []
+    event_pfn_candidates = [0]
+
+    # fast path with cluster size 1
+    for mapping in pc_mappings:
+        # sort accessed
+        mapping["accessed_pfns_events_argsort"] = [np.argsort(-np.array(x)) for x in mapping["accessed_pfns_events"]]
+        processMapping(mapping, samples, 1, fit_score_threshold, event_to_pfn_mapping, event_pfn_candidates)
+    # stop everything is classified already
+    if all(event_pfn_candidates ) != 0:
+        break
+
+    for cluster_size in range(2, len(events) + 1):
+        for mapping in pc_mappings:
+            processMapping(mapping, samples, cluster_size, fit_score_threshold, event_to_pfn_mapping, event_pfn_candidates)
+        # stop everything is classified already
+        if all(event_pfn_candidates ) != 0:
+            break
+
+    return event_to_pfn_mapping.sort(key=lambda x: x["fitness"], reverse=True)
+
+
 def printEventFileOffsets(event_file_offsets, samples):
     for event_file_offset in event_file_offsets:
         score_percent = event_file_offset[0] / samples * 100
         if score_percent > 50: 
-            print("Score: {}%, File: {}, Offset: 0x{:x}".format(event_file_offset[0] / samples * 100, event_file_offset[1], event_file_offset[2]))
+            print("Score: {}%, File: {}, Offset: 0x{:x}, Current PFN: 0x{:x}".format(event_file_offset[0] / samples * 100, event_file_offset[1], event_file_offset[2], event_file_offset[3]))
 
 
-def doUserEvent():
+def doUserEventNoInput():
     print("Trigger Event...")
     time.sleep(3)
     print("STOP") 
@@ -119,41 +174,80 @@ def doUserEvent():
     print("!!!") 
 
 
+def doUserEvent():
+    print("Trigger Event....")
+    input("Press key when ready...")
 
-parser = argparse.ArgumentParser(description="Decode '/proc/{pid}/maps' info.")
+
+def dofakeEvent():
+    os.sched_yield()
+
+def doKeyboardEvent(key):
+    #keyboard = Controller()
+    #keyboard.press(KeyCode.from_char(key))
+    #keyboard.release(KeyCode.from_char(key))
+    keyboard.write(key)
+    # sleep a bit
+    time.sleep(0.01)
+
+def prepareKeyEvents():
+    letters = string.digits + string.ascii_lowercase
+    events = [ ("key_" + x, functools.partial(doKeyboardEvent, x)) for x in letters ]
+    events.append(("fake", dofakeEvent))
+    return events
+        
+
+# TODO modify
+def autoCampaignPrepareEvents():
+    return prepareKeyEvents()
+
+
+
+parser = argparse.ArgumentParser(description="Profiles which pae offsets of files are accessed in case of an event.")
 parser.add_argument("pid", type=int, help="pid of the target process to attach to")
 parser.add_argument("samples", type=int, help="amount of samples")
-parser.add_argument("--event_user", type=str, action="append", metavar=("NAME"), help="user manually trigerrs events")
+parser.add_argument("--event_user", type=str, action="append", metavar=("NAME"), help="use manually triggered events (else coded in events are used)")
+parser.add_argument("--event_user_no_input", action="store_true", help="do not ask for event completion, but use a wait time instead")
+parser.add_argument("--tracer", action="store_true", help="starts a interactive tracer afterwards")
+parser.add_argument("--save", type=str, help="saves results into json file")
+
 #parser.add_argument("--event", type=str, action="append", nargs=2, metavar=("TYPE", "NAME"), help="python expression for generating event")
 args = parser.parse_args()
 pid = args.pid
 
-#print("Processing is started after 5 seconds...")
-#time.sleep(5)
+signal.signal(signal.SIGINT, signal.default_int_handler)
 
 # prepare events 
 events = []
 if args.event_user:
-    events = [ (x, doUserEvent) for x in args.event_user ]
+    events = [ (x, doUserEventNoInput if args.event_user_no_input else doUserEvent) for x in args.event_user ]
     input("Please execute events a few times and press enter (warms up page cache)...")
+else:
+    events = autoCampaignPrepareEvents()
+
+# give user time to change focus, ...
+print("Starting in 5s...")
+time.sleep(5)
 
 # get library mappings + pfns
 pc_mappings = targetGetPcMappings(pid)
 
-# additional entries for pc_mappings 
+# debug print detected pc objects
+# add accessed pfn matrix for each mapping 
 for mapping in pc_mappings:
+    #print(mapping["path"])
     mapping["accessed_pfns_events"] = [[0] * len(events) for _ in range(len(mapping["pfns"]))]
 
-# initialse page usage tracker
+# sample all events
 page_usage_tracker = vmtools.PageUsageTracker()
 print("Sampling events:")
-for event_i, event in enumerate(events):
-    print("Sampling event: " + event[0])
-    for _ in tqdm.tqdm(range(args.samples)):
+for _ in tqdm.tqdm(range(args.samples)):
+    for event_i, event in random.sample(list(enumerate(events)), len(events)):
+        print("Sampling event: " + event[0])
         # reset
         for mapping in pc_mappings:
             page_usage_tracker.resetPfns(mapping["pfns"])
-     
+    
         # run event function
         event[1]()
 
@@ -163,15 +257,17 @@ for event_i, event in enumerate(events):
             for off in range(len(state)):
                 mapping["accessed_pfns_events"][off][event_i] += state[off]
 
+
+# 
 # process data
-# find pages which describe events best
+# very simple just searches for pfns which describe a event best, i.e. its likely that only this event will set this pfn
 events_file_offsets = [ [] for _ in range(len(events)) ]
 for mapping in pc_mappings:
     for off in range(len(mapping["accessed_pfns_events"])):
         max2events = np.argsort(-np.array(mapping["accessed_pfns_events"][off]))[:2]
         score = mapping["accessed_pfns_events"][off][max2events[0]] - mapping["accessed_pfns_events"][off][max2events[1]]
         if score > 0:
-            events_file_offsets[max2events[0]].append((score, mapping["path"] , mapping["addresses"][0] + off * mmap.PAGESIZE, mapping["pfns"][off]))
+            events_file_offsets[max2events[0]].append((score, mapping["path"] , mapping["file_offset"] + off * mmap.PAGESIZE, mapping["pfns"][off]))
 # sort + print
 for i, event_file_offsets in enumerate(events_file_offsets): 
     # sort by score
@@ -180,15 +276,32 @@ for i, event_file_offsets in enumerate(events_file_offsets):
     printEventFileOffsets(event_file_offsets, args.samples)
 
 
-# tracing for event a
-pfn = events_file_offsets[0][0][3]
-page_usage_tracker.resetPfns([pfn])
-while True:
-    state = page_usage_tracker.getPfnsState([pfn])
-    if state[0] == 1:
-        print("DETECTED")
+# save data
+if args.save:
+    results = {
+        "raw_data": pc_mappings,
+        "events_file_offsets": events_file_offsets
+    }
+    with open(args.save, "w") as file:
+        file.write(json.dumps(results, indent=4))
+
+
+
+# for debugging purposes
+if args.tracer:
+    while True:
+        pfn = int(input("PFN to track (hex)> "), 16)
         page_usage_tracker.resetPfns([pfn])
-    time.sleep(0.001)
+        try:
+            while True:
+                current_time = time.time_ns()
+                state = page_usage_tracker.getPfnsState([pfn])
+                if state[0] == True:
+                    print("[{}] Access detected!".format(current_time))
+                    page_usage_tracker.resetPfns([pfn])
+                os.sched_yield()
+        except KeyboardInterrupt:
+            pass
 
 
 exit(0)
