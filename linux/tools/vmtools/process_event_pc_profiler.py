@@ -181,7 +181,7 @@ class SinglePageClassifier(Classifier):
         min_cluster_score = np.min(raw_cluster)
         noise_score = np.sqrt(np.sum(non_cluster ** 2))
 
-        raw_fitness =np.max(min_cluster_score - noise_score, 0)
+        raw_fitness = np.max(min_cluster_score - noise_score, 0)
         return (raw_fitness, raw_fitness / self.samples_)
 
     def getEventClusterDescriptor(self, cluster_events):
@@ -257,7 +257,7 @@ class SinglePageClassifier(Classifier):
 
 def dofakeEvent():
     # sleep a bit
-    time.sleep(0.01)
+    time.sleep(0.1)
 
 
 def doUserEventNoInput():
@@ -272,16 +272,20 @@ def doUserEvent():
     input("Press key when ready...")
 
 
-def doKeyboardEvent(key):
+def doKeyboardEvent(sc):
     #keyboard = Controller()
-    #keyboard.press(KeyCode.from_char(key))
-    #keyboard.release(KeyCode.from_char(key))
-    keyboard.write(key)
-    time.sleep(0.01)
+    keyboard.press(sc)
+    keyboard.release(sc)
+    #keyboard.write(key)
+    time.sleep(0.1)
 
 def prepareKeyEvents():
-    letters = string.digits #+ string.ascii_lowercase
-    events = [ ("key_" + x, functools.partial(doKeyboardEvent, x)) for x in letters ]
+    scan_codes = [0x29, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b,
+        0x0c, 0x0d, 0x0e, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, # 0x0f <- tab
+        0x1a, 0x1b, 0x1c, 0x3a, 0x1e, 0x1f, 0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26,
+        0x27, 0x28, 0x2b, 0x2a, 0x56, 0x2c, 0x2d, 0x2e, 0x2f, 0x30, 0x31, 0x32, 0x33,
+        0x34, 0x35, 0x36, 0x1d, 0x38, 0x39, 0xe038, 0xe05d, 0xe01d]
+    events = [ ("sc_" + hex(x), functools.partial(doKeyboardEvent, x)) for x in scan_codes ]
     events.append(("fake", dofakeEvent))
     return events
         
@@ -304,7 +308,7 @@ args = parser.parse_args()
 
 signal.signal(signal.SIGINT, signal.default_int_handler)
 
-classifier = SinglePageClassifier(0.5, 0.5)
+classifier = SinglePageClassifier(0.6, 0.6)
 
 events = None 
 pid = None 
@@ -340,7 +344,11 @@ results = classifier.train()
 classifier.printResults()
 
 # optional: save data
+# transform numpy to python structures
 if args.save:
+    for mapping in results["raw_data"]:
+        mapping["accessed_pfns_events"] = [x.tolist() for x in mapping["accessed_pfns_events"]]
+        del mapping["accessed_pfns_events_argsort"]
     with open(args.save, "w") as file:
         file.write(json.dumps(results, indent=4))
 
