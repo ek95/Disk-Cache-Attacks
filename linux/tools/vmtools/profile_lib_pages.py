@@ -19,6 +19,7 @@ import random
 import keyboard
 import functools
 import string
+import pdb
 
 
 def createEventPageHitHeatmap(file_path, file_offset, hit_data_raw, max_val, 
@@ -83,15 +84,13 @@ def targetGetPcMappings(pid):
     # get pfns for maps 
     for map in maps:
         vpn_low = int(map["addresses"][0] / mmap.PAGESIZE)
-        vpn_high = int((map["addresses"][1] + mmap.PAGESIZE - 1) / mmap.PAGESIZE)
+        vpn_sup = int((map["addresses"][1] + mmap.PAGESIZE - 1) / mmap.PAGESIZE)
         
-        pfns = []
-        for vpn in range(vpn_low, vpn_high):
+        pfns = [-1] * (vpn_sup - vpn_low)
+        for i, vpn in enumerate(range(vpn_low, vpn_sup)):
             mapping = page_map_reader.getMapping(vpn)
             if mapping[0].present:
-                pfns.append(mapping[0].pfn_swap)
-            else:
-                pfns.append(-1)
+                pfns[i] = mapping[0].pfn_swap
         map["pfns"] = pfns
 
     process_control.resume()
@@ -99,36 +98,48 @@ def targetGetPcMappings(pid):
 
 
 
-def calcFitScore(event, pfn_state_events, samples):
-    score = max(2 * pfn_state_events[event] - sum(pfn_state_events), 0)
-    return (score, score / samples)
+def getEventClusterFitness(pfn_accesses_events, cluster_events, samples):
+    # ideas:
+    # min score of cluster elements is cluster score
+    # if other events triggered randomly this could also come from some other operation
+    #   -> general noise -> penality should not be too high if other events triggered less in comparision
+    #   -> calculate their influence with rms
+    raw_cluster = pfn_accesses_events[cluster_events]
+    mask = np.ones(pfn_accesses_events.size, dtype=bool)
+    mask[cluster_events] = False
+    non_cluster = pfn_accesses_events[mask]
 
+    min_cluster_score = np.min(raw_cluster)
+    noise_score = np.sqrt(np.sum(non_cluster ** 2))
 
-def getEventClusterFitness(cluster_pfn_state, samples):
-    raw_cluster = sum(cluster_pfn_state)
-    normalized_cluster = raw_cluster / len(cluster_pfn_state)
-    raw_fitness = max(2 * raw_cluster - sum(cluster_pfn_state), 0)
+    raw_fitness = max(min_cluster_score - noise_score, 0)
     return (raw_fitness, raw_fitness / samples)
 
+def getEventClusterDescriptor(cluster_events):
+    descriptor = "-".join([str(x) for x in cluster_events])
+    return descriptor
 
-def processMapping(mapping, samples, cluster_size, fit_score_threshold, event_to_pfn_mapping, event_pfn_candidates):
+def processMapping(mapping, samples, cluster_size, fitness_threshold, event_to_file_page_mapping, event_to_file_page_candidates):
     for off in range(len(mapping["accessed_pfns_events"])):
         cluster_events = mapping["accessed_pfns_events_argsort"][off][:cluster_size]
-        fitness = getEventClusterFitness(mapping["accessed_pfns_events"][off][cluster_events], samples)
-        if fitness[1] > fit_score_threshold:
-            event_pfn_candidates[cluster_events] += 1
-            event_to_pfn_mapping.append({
+        fitness = getEventClusterFitness(mapping["accessed_pfns_events"][off], cluster_events, samples)
+        if fitness[1] > fitness_threshold:
+            event_to_file_page_candidates[cluster_events] += 1
+            event_cluster_descriptor = getEventClusterDescriptor(cluster_events)
+            if not (event_cluster_descriptor in event_to_file_page_mapping):
+                event_to_file_page_mapping[event_cluster_descriptor] = []
+            event_to_file_page_mapping[event_cluster_descriptor].append({
                 "events": cluster_events,
                 "fitness": fitness,
                 "path": mapping["path"], 
                 "file_offset": mapping["file_offset"] + off * mmap.PAGESIZE,
                 "current_pfn": mapping["pfns"][off]
             })
-
     return
 
 
-def processEventDataSimple(events, pc_mappings, samples, fit_score_threshold):
+
+def processEventDataSimple(events, pc_mappings, samples, fitness_threshold):
     # simple idea -> not very powerful (clustering algorithms, ml would be far more powerful)
     # but fits well with event-triggered eviction approach (periodic sampling is anyhow not wanted)
     #   -> we look at the classification problem page-per-page
@@ -137,33 +148,48 @@ def processEventDataSimple(events, pc_mappings, samples, fit_score_threshold):
     #   -> pages which accurately classify ONE event are preferred
     #       -> if not every event is covered, we search for (small) clusters
     #   -> continue until all events are covered or cluster search reached max. size 
-    event_to_pfn_mapping = []
-    event_pfn_candidates = [0]
+    event_to_file_page_mapping = {}
+    event_to_file_page_candidates = np.zeros(len(events))
 
     # fast path with cluster size 1
     for mapping in pc_mappings:
-        # sort accessed
-        mapping["accessed_pfns_events_argsort"] = [np.argsort(-np.array(x)) for x in mapping["accessed_pfns_events"]]
-        processMapping(mapping, samples, 1, fit_score_threshold, event_to_pfn_mapping, event_pfn_candidates)
-    # stop everything is classified already
-    if all(event_pfn_candidates ) != 0:
-        break
+        # sort events number by score
+        mapping["accessed_pfns_events_argsort"] = [np.argsort(-x) for x in mapping["accessed_pfns_events"]]
+        processMapping(mapping, samples, 1, fitness_threshold, event_to_file_page_mapping, event_to_file_page_candidates)
+    # stop if everything is classified already
+    if not all(event_to_file_page_candidates):
+        for cluster_size in range(2, len(events) + 1):
+            print("Trying for cluster size {}".format(cluster_size))
+            for mapping in pc_mappings:
+                processMapping(mapping, samples, cluster_size, fitness_threshold, event_to_file_page_mapping, event_to_file_page_candidates)
+            # stop everything is classified already
+            if all(event_to_file_page_candidates):
+                break
 
-    for cluster_size in range(2, len(events) + 1):
-        for mapping in pc_mappings:
-            processMapping(mapping, samples, cluster_size, fit_score_threshold, event_to_pfn_mapping, event_pfn_candidates)
-        # stop everything is classified already
-        if all(event_pfn_candidates ) != 0:
-            break
+    # sort event_to_pfn mappings by fitness
+    for array in event_to_file_page_mapping.values():
+        array.sort(key=lambda x: x["fitness"], reverse=True)
 
-    return event_to_pfn_mapping.sort(key=lambda x: x["fitness"], reverse=True)
+    print(event_to_file_page_candidates)
+    return event_to_file_page_mapping
 
 
-def printEventFileOffsets(event_file_offsets, samples):
-    for event_file_offset in event_file_offsets:
-        score_percent = event_file_offset[0] / samples * 100
-        if score_percent > 50: 
-            print("Score: {}%, File: {}, Offset: 0x{:x}, Current PFN: 0x{:x}".format(event_file_offset[0] / samples * 100, event_file_offset[1], event_file_offset[2], event_file_offset[3]))
+def printEventFileOffsets(events, event_to_file_page_mapping, fitness_threshold):
+    for event_file_pages in event_to_file_page_mapping.values():
+        if len(event_file_pages) > 0 and event_file_pages[0]["fitness"][1] > fitness_threshold:
+            event_string = ", ".join([events[e][0] for e in event_file_pages[0]["events"]])
+            print("Event: {}".format(event_string))
+        else:
+            continue
+        for event_file_page in event_file_pages:
+            if event_file_page["fitness"][1] > fitness_threshold:
+                print("Fitness: {}%, File: {}, Offset: 0x{:x}, Current PFN: 0x{:x}".format(event_file_page["fitness"][1] * 100, event_file_page["path"], event_file_page["file_offset"], event_file_page["current_pfn"]))
+
+
+def dofakeEvent():
+    # sleep a bit
+    time.sleep(0.01)
+
 
 
 def doUserEventNoInput():
@@ -173,21 +199,16 @@ def doUserEventNoInput():
     time.sleep(1)
     print("!!!") 
 
-
 def doUserEvent():
     print("Trigger Event....")
     input("Press key when ready...")
 
-
-def dofakeEvent():
-    os.sched_yield()
 
 def doKeyboardEvent(key):
     #keyboard = Controller()
     #keyboard.press(KeyCode.from_char(key))
     #keyboard.release(KeyCode.from_char(key))
     keyboard.write(key)
-    # sleep a bit
     time.sleep(0.01)
 
 def prepareKeyEvents():
@@ -236,7 +257,7 @@ pc_mappings = targetGetPcMappings(pid)
 # add accessed pfn matrix for each mapping 
 for mapping in pc_mappings:
     #print(mapping["path"])
-    mapping["accessed_pfns_events"] = [[0] * len(events) for _ in range(len(mapping["pfns"]))]
+    mapping["accessed_pfns_events"] = [np.zeros(len(events)) for _ in range(len(mapping["pfns"]))]
 
 # sample all events
 page_usage_tracker = vmtools.PageUsageTracker()
@@ -257,30 +278,28 @@ for _ in tqdm.tqdm(range(args.samples)):
             for off in range(len(state)):
                 mapping["accessed_pfns_events"][off][event_i] += state[off]
 
-
-# 
 # process data
+event_to_file_page_mapping = processEventDataSimple(events, pc_mappings, args.samples, 0.5)
+
 # very simple just searches for pfns which describe a event best, i.e. its likely that only this event will set this pfn
-events_file_offsets = [ [] for _ in range(len(events)) ]
-for mapping in pc_mappings:
-    for off in range(len(mapping["accessed_pfns_events"])):
-        max2events = np.argsort(-np.array(mapping["accessed_pfns_events"][off]))[:2]
-        score = mapping["accessed_pfns_events"][off][max2events[0]] - mapping["accessed_pfns_events"][off][max2events[1]]
-        if score > 0:
-            events_file_offsets[max2events[0]].append((score, mapping["path"] , mapping["file_offset"] + off * mmap.PAGESIZE, mapping["pfns"][off]))
+#events_file_offsets = [ [] for _ in range(len(events)) ]
+#for mapping in pc_mappings:
+#    for off in range(len(mapping["accessed_pfns_events"])):
+#        max2events = np.argsort(-np.array(mapping["accessed_pfns_events"][off]))[:2]
+#        score = mapping["accessed_pfns_events"][off][max2events[0]] - mapping["accessed_pfns_events"][off][max2events[1]]
+#        if score > 0:
+#            events_file_offsets[max2events[0]].append((score, mapping["path"] , mapping["file_offset"] + off * mmap.PAGESIZE, mapping["pfns"][off]))
+
 # sort + print
-for i, event_file_offsets in enumerate(events_file_offsets): 
-    # sort by score
-    event_file_offsets.sort(key=lambda x: x[0], reverse=True)
-    print("File offset combinations with a score > 50% for event {}:".format(events[i][0]))
-    printEventFileOffsets(event_file_offsets, args.samples)
+printEventFileOffsets(events, event_to_file_page_mapping, 0.5)
 
 
 # save data
 if args.save:
     results = {
+        "event_strings": [e[0] for e in events],
         "raw_data": pc_mappings,
-        "events_file_offsets": events_file_offsets
+        "event_to_file_page_mapping": event_to_file_page_mapping
     }
     with open(args.save, "w") as file:
         file.write(json.dumps(results, indent=4))
