@@ -106,7 +106,8 @@ class Classifier:
         self.samples_ = None
         self.pc_mappings_ = None
 
-    def loadRawData(self, samples, pc_mappings):
+    def loadRawData(self, events, samples, pc_mappings):
+        self.events_ = events
         self.samples_ = samples
         self.pc_mappings_ = pc_mappings
 
@@ -151,7 +152,7 @@ class Classifier:
         raise NotImplementedError("Needs to be overwritten!")
 
 
-class SinglePageClassifier(Classifier):
+class SinglePageClassifierOld(Classifier):
     def __init__(self, fitness_threshold_train, fitness_threshold_print):
         super().__init__(fitness_threshold_train, fitness_threshold_print)
         self.pc_mappings_ = None
@@ -255,6 +256,153 @@ class SinglePageClassifier(Classifier):
                     print("Fitness: {}, File: {}, Offset: 0x{:x}, Current PFN: 0x{:x}".format(event_file_page["fitness"][1], event_file_page["path"], event_file_page["file_offset"], event_file_page["current_pfn"]))
 
 
+# generates unique event subgroups of a given size from a given event alphabet
+class EventSubgroupGenerator(object):
+    def __init__(self, event_alphabet, group_size):
+        self.event_alphabet_ = event_alphabet
+        self.alphabet_size_ = len(self.event_alphabet_)
+        self.group_size_ = group_size
+        self.generator_clock_ = list(range(group_size))
+        self.exhausted_ = False
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        return self.next()
+
+    def tickGeneratorClock(self):
+        back_prob_start_pos = len(self.generator_clock_)
+        # tick
+        for tick_pos in range(len(self.generator_clock_) - 1, -1, -1):
+            self.generator_clock_[tick_pos] += 1
+            # no overflow -> ok end
+            if self.generator_clock_[tick_pos] != self.alphabet_size_:
+                break
+            # overflow -> continue, save back prop position
+            back_prob_start_pos = tick_pos
+        # backprob -> fix values
+        for back_prob_pos in range(back_prob_start_pos, len(self.generator_clock_)):
+            self.generator_clock_[back_prob_pos] = self.generator_clock_[back_prob_pos - 1] + 1
+            # exhausted ? 
+            if self.generator_clock_[back_prob_pos] == self.alphabet_size_:
+                return True 
+        return False
+
+    def next(self):
+        if self.exhausted_:
+            raise StopIteration()
+        # subsample
+        ret = [self.event_alphabet_[idx] for idx in self.generator_clock_]
+        # tick generator clock
+        self.exhausted_ = self.tickGeneratorClock()
+        return ret
+
+
+class SinglePageClassifier(Classifier):
+    def __init__(self, fitness_threshold_train, fitness_threshold_print, ch_ratios_filter_threshold):
+        super().__init__(fitness_threshold_train, fitness_threshold_print)
+        self.event_to_file_page_mapping_ = None
+        self.event_to_file_page_candidates_ = None
+        self.ch_ratios_filter_threshold_ = ch_ratios_filter_threshold
+
+    def collectPrepare_(self, pc_mappings):
+        # prepare mapping objects for storing results
+        for mapping in pc_mappings:
+            # event - access matrix
+            mapping["events_pfn_accesses"] = np.zeros((len(self.events_), len(mapping["pfns"])))
+
+    def collectMappingAdd_(self, mapping, pfn_state, event):
+        mapping["events_pfn_accesses"][event] += pfn_state
+
+    def computeChRatios(self):
+        for mapping in self.pc_mappings_:
+            mapping["events_ch_ratio_raw"] = mapping["events_pfn_accesses"] / self.samples_ 
+
+    def filterPfnsWithSimilarChRatio(self):
+        for mapping in self.pc_mappings_:
+            # get min ch ratio per address
+            min_ch_ratios = np.min(mapping["events_ch_ratio_raw"], axis=0)
+            # get max ch ratio per address
+            max_ch_ratios = np.max(mapping["events_ch_ratio_raw"], axis=0)
+            # get diff
+            diff = max_ch_ratios - min_ch_ratios
+            # is difference small -> remove
+            remove = diff < self.ch_ratios_filter_threshold_ 
+            # set cells to zero 
+            mapping["events_ch_ratio_filtered"] = mapping["events_ch_ratio_raw"]
+            mapping["events_ch_ratio_filtered"][:,remove] = np.zeros((mapping["events_ch_ratio_raw"].shape[0], remove.size))
+
+    def areEventsSimilar(self, events_ch_ratio):
+        mean_ch_ratio = np.mean(events_ch_ratio, axis=0)
+        abs_diff = np.abs(events_ch_ratio - mean_ch_ratio * np.ones((events_ch_ratio.shape[0],1)))
+        return np.all(abs_diff < self.ch_ratios_filter_threshold_)
+
+    def groupSimilarEvents(self):
+        for mapping in self.pc_mappings_:
+            events_to_process = list(range(mapping["events_ch_ratio_filtered"].shape[0]))
+            mapping["events_ch_ratio_merged_header"] = {}
+            mapping["events_ch_ratio_merged"] = np.zeros((0, mapping["events_ch_ratio_filtered"].shape[1]))
+            # top down apporach
+            # start by evaluating if all events are the same
+            #   -> metric: mean absolute differene from mean smalller as threshold at all cells
+            # yes: stop we only have one cluster
+            # no: evaluate subgroups
+            event_subgroup_queue = [events_to_process]
+            while len(event_subgroup_queue) != 0:
+                event_subgroup = event_subgroup_queue.pop(0)
+                # similar -> add merged group
+                if self.areEventsSimilar(event_subgroup):
+                    if not (len(event_subgroup) in mapping["events_ch_ratio_merged_header"]):
+                        mapping["events_ch_ratio_merged_header"][len(event_subgroup)] = []
+                    mapping["events_ch_ratio_merged_header"][len(event_subgroup)].append({
+                        "idx": mapping["events_ch_ratio_merged"].shape[0],
+                        "events": {*event_subgroup}
+                    })
+                    np.vstack(mapping["events_ch_ratio_merged"], np.mean(mapping["events_ch_ratio_filtered"][event_subgroup,:]))
+                # not similar -> we have to go down to smaller subgroups
+                else:
+                    event_subgroup_queue.extend([x for x in EventSubgroupGenerator(event_subgroup, len(event_subgroup) - 1)])
+
+    def findEventSinglePageMappings(self):
+        found_optimal_mappings = []
+        for event_nr in len(self.events_):
+            for cluster_size in len(self.events_):
+                for mapping in self.pc_mappings_:                     
+                    mapping["events_ch_ratio_merged_header"][cluster_size]
+
+    def train(self):
+        # 1. Compute raw cache-hit ratios
+        self.computeChRatios()
+        # 2. Filter pfns with similar ch ratio
+        #   -> Set to zero everywhere -> common to all events
+        self.filterPfnsWithSimilarChRatio()
+        # 3. Group similar events
+        self.groupSimilarEvents()
+        # 4. Search optimal set of event-page mappings to describe events
+        # if a event optimally is only describeable using multiple pages -> error 
+        self.findEventSinglePageMappings()
+        results = {
+            "event_strings": [e[0] for e in self.events_],
+            "raw_data": self.pc_mappings_,
+            "event_to_file_page_mapping": self.event_to_file_page_mapping_
+        }
+        return results
+
+    def printResults(self):
+        for event_file_pages in self.event_to_file_page_mapping_.values():
+            if len(event_file_pages) > 0 and event_file_pages[0]["fitness"][1] > self.fitness_threshold_print_:
+                event_string = ", ".join([self.events_[e][0] for e in event_file_pages[0]["events"]])
+                print("Event: {}".format(event_string))
+            else:
+                continue
+            for event_file_page in event_file_pages:
+                if event_file_page["fitness"][1] > self.fitness_threshold_print_:
+                    print("Fitness: {}, File: {}, Offset: 0x{:x}, Current PFN: 0x{:x}".format(event_file_page["fitness"][1], event_file_page["path"], event_file_page["file_offset"], event_file_page["current_pfn"]))
+
+
+
+
 def dofakeEvent():
     # sleep a bit
     time.sleep(0.1)
@@ -319,6 +467,8 @@ if args.load:
         results_json = json.loads(file.read())
     events = [(e , None) for e in results_json["events"]]
     pc_mappings = results_json["raw_trace"]
+    # load saved raw data
+    classifier.loadRawData(events, samples, pc_mappings)
 elif args.collect:
     pid = args.collect[0]
     samples = args.collect[1]
