@@ -99,9 +99,8 @@ def targetGetPcMappings(pid):
 
 
 class Classifier:
-    def __init__(self, fitness_threshold_train, fitness_threshold_print):
+    def __init__(self, fitness_threshold_train):
         self.fitness_threshold_train_ = fitness_threshold_train
-        self.fitness_threshold_print_ = fitness_threshold_print
         self.events_ = None   
         self.samples_ = None
         self.pc_mappings_ = None
@@ -152,110 +151,6 @@ class Classifier:
         raise NotImplementedError("Needs to be overwritten!")
 
 
-class SinglePageClassifierOld(Classifier):
-    def __init__(self, fitness_threshold_train, fitness_threshold_print):
-        super().__init__(fitness_threshold_train, fitness_threshold_print)
-        self.pc_mappings_ = None
-        self.event_to_file_page_mapping_ = None
-        self.event_to_file_page_candidates_ = None
-
-    def collectPrepare_(self, pc_mappings):
-        # prepare mapping objects for storing results
-        for mapping in pc_mappings:
-            mapping["accessed_pfns_events"] = [np.zeros(len(self.events_)) for _ in range(len(mapping["pfns"]))]
-
-    def collectMappingAdd_(self, mapping, pfn_state, event):
-        for off in range(len(pfn_state)):
-            mapping["accessed_pfns_events"][off][event] += pfn_state[off]
-
-    def getEventClusterFitness(self, pfn_accesses_events, cluster_events):
-        # ideas:
-        # min score of cluster elements is cluster score
-        # if other events triggered randomly this could also come from some other operation
-        #   -> general noise -> penality should not be too high if other events triggered less in comparision
-        #   -> calculate their influence with rms
-        raw_cluster = pfn_accesses_events[cluster_events]
-        mask = np.ones(pfn_accesses_events.size, dtype=bool)
-        mask[cluster_events] = False
-        non_cluster = pfn_accesses_events[mask]
-
-        min_cluster_score = np.min(raw_cluster)
-        noise_score = np.sqrt(np.sum(non_cluster ** 2))
-
-        raw_fitness = np.max(min_cluster_score - noise_score, 0)
-        return (raw_fitness, raw_fitness / self.samples_)
-
-    def getEventClusterDescriptor(self, cluster_events):
-        descriptor = "-".join([str(x) for x in cluster_events])
-        return descriptor
-
-    def processMapping(self, mapping, cluster_size):
-        for off in range(len(mapping["accessed_pfns_events"])):
-            cluster_events = mapping["accessed_pfns_events_argsort"][off][:cluster_size]
-            fitness = self.getEventClusterFitness(mapping["accessed_pfns_events"][off], cluster_events)
-            if fitness[1] > self.fitness_threshold_train_:
-                self.event_to_file_page_candidates_[cluster_events] += 1
-                event_cluster_descriptor = self.getEventClusterDescriptor(cluster_events)
-                if not (event_cluster_descriptor in self.event_to_file_page_mapping_):
-                    self.event_to_file_page_mapping_[event_cluster_descriptor] = []
-                self.event_to_file_page_mapping_[event_cluster_descriptor].append({
-                    "events": cluster_events.tolist(),
-                    "fitness": fitness,
-                    "path": mapping["path"], 
-                    "file_offset": mapping["file_offset"] + off * mmap.PAGESIZE,
-                    "current_pfn": mapping["pfns"][off]
-                })
-        return
-
-    def train(self):
-        # simple idea -> not very powerful (clustering algorithms, ml would be far more powerful)
-        # but fits well with event-triggered eviction approach (periodic sampling is anyhow not wanted)
-        #   -> we look at the classification problem page-per-page
-        #       -> no detection of higher-order patterns!
-        #   -> we want to have every event covered
-        #   -> pages which accurately classify ONE event are preferred
-        #       -> if not every event is covered, we search for (small) clusters
-        #   -> continue until all events are covered or cluster search reached max. size 
-        self.event_to_file_page_mapping_ = {}
-        self.event_to_file_page_candidates_ = np.zeros(len(events))
-
-        # fast path with cluster size 1
-        for mapping in self.pc_mappings_:
-            # sort events number by score
-            mapping["accessed_pfns_events_argsort"] = [np.argsort(-x) for x in mapping["accessed_pfns_events"]]
-            self.processMapping(mapping, 1)
-        # stop if everything is classified already
-        if not all(self.event_to_file_page_candidates_):
-            for cluster_size in range(2, len(events) + 1):
-                for mapping in self.pc_mappings_:
-                    self.processMapping(mapping, cluster_size)
-                # stop everything is classified already
-                if all(self.event_to_file_page_candidates_):
-                    break
-
-        # sort event_to_pfn mappings by fitness
-        for array in self.event_to_file_page_mapping_.values():
-            array.sort(key=lambda x: x["fitness"], reverse=True)
-
-        results = {
-            "event_strings": [e[0] for e in self.events_],
-            "raw_data": self.pc_mappings_,
-            "event_to_file_page_mapping": self.event_to_file_page_mapping_
-        }
-        return results
-
-    def printResults(self):
-        for event_file_pages in self.event_to_file_page_mapping_.values():
-            if len(event_file_pages) > 0 and event_file_pages[0]["fitness"][1] > self.fitness_threshold_print_:
-                event_string = ", ".join([self.events_[e][0] for e in event_file_pages[0]["events"]])
-                print("Event: {}".format(event_string))
-            else:
-                continue
-            for event_file_page in event_file_pages:
-                if event_file_page["fitness"][1] > self.fitness_threshold_print_:
-                    print("Fitness: {}, File: {}, Offset: 0x{:x}, Current PFN: 0x{:x}".format(event_file_page["fitness"][1], event_file_page["path"], event_file_page["file_offset"], event_file_page["current_pfn"]))
-
-
 # generates unique event subgroups of a given size from a given event alphabet
 class EventSubgroupGenerator(object):
     def __init__(self, event_alphabet, group_size):
@@ -282,6 +177,9 @@ class EventSubgroupGenerator(object):
             # overflow -> continue, save back prop position
             back_prob_start_pos = tick_pos
         # backprob -> fix values
+        # exhausted?
+        if back_prob_start_pos == 0:
+            return True
         for back_prob_pos in range(back_prob_start_pos, len(self.generator_clock_)):
             self.generator_clock_[back_prob_pos] = self.generator_clock_[back_prob_pos - 1] + 1
             # exhausted ? 
@@ -300,16 +198,15 @@ class EventSubgroupGenerator(object):
 
 
 class SinglePageClassifier(Classifier):
-    def __init__(self, fitness_threshold_train, fitness_threshold_print, ch_ratios_filter_threshold):
-        super().__init__(fitness_threshold_train, fitness_threshold_print)
-        self.event_to_file_page_mapping_ = None
-        self.event_to_file_page_candidates_ = None
+    def __init__(self, fitness_threshold_train, ch_ratios_filter_threshold):
+        super().__init__(fitness_threshold_train)
+        self.optimal_event_file_offset_mappings_ = None
         self.ch_ratios_filter_threshold_ = ch_ratios_filter_threshold
 
     def collectPrepare_(self, pc_mappings):
         # prepare mapping objects for storing results
         for mapping in pc_mappings:
-            # event - access matrix
+            # event-access matrix
             mapping["events_pfn_accesses"] = np.zeros((len(self.events_), len(mapping["pfns"])))
 
     def collectMappingAdd_(self, mapping, pfn_state, event):
@@ -327,80 +224,156 @@ class SinglePageClassifier(Classifier):
             max_ch_ratios = np.max(mapping["events_ch_ratio_raw"], axis=0)
             # get diff
             diff = max_ch_ratios - min_ch_ratios
-            # is difference small -> remove
+            # is difference small -> common loaded pages -> remove (set ch ratio to zero)
             remove = diff < self.ch_ratios_filter_threshold_ 
             # set cells to zero 
             mapping["events_ch_ratio_filtered"] = mapping["events_ch_ratio_raw"]
-            mapping["events_ch_ratio_filtered"][:,remove] = np.zeros((mapping["events_ch_ratio_raw"].shape[0], remove.size))
+            mapping["events_ch_ratio_filtered"][:,remove] = np.zeros((mapping["events_ch_ratio_raw"].shape[0], np.sum(remove)))
 
     def areEventsSimilar(self, events_ch_ratio):
+        # short path: one event is always similar to its self ;)
+        if events_ch_ratio.shape[0] == 1:
+            return True
+
         mean_ch_ratio = np.mean(events_ch_ratio, axis=0)
         abs_diff = np.abs(events_ch_ratio - mean_ch_ratio * np.ones((events_ch_ratio.shape[0],1)))
         return np.all(abs_diff < self.ch_ratios_filter_threshold_)
 
     def groupSimilarEvents(self):
+        # check for each mapping
         for mapping in self.pc_mappings_:
             events_to_process = list(range(mapping["events_ch_ratio_filtered"].shape[0]))
             mapping["events_ch_ratio_merged_header"] = {}
             mapping["events_ch_ratio_merged"] = np.zeros((0, mapping["events_ch_ratio_filtered"].shape[1]))
-            # top down apporach
+            # top down approach
             # start by evaluating if all events are the same
-            #   -> metric: mean absolute differene from mean smalller as threshold at all cells
-            # yes: stop we only have one cluster
+            #   -> metric: to all events have a small absolut difference compared to their mean?
+            # yes: stop we only have one detectable group
             # no: evaluate subgroups
             event_subgroup_queue = [events_to_process]
+            # keep track of processed subgroups to avoid double evaluation
+            added_subgroups = {frozenset(events_to_process)}
             while len(event_subgroup_queue) != 0:
                 event_subgroup = event_subgroup_queue.pop(0)
                 # similar -> add merged group
-                if self.areEventsSimilar(event_subgroup):
+                if self.areEventsSimilar(mapping["events_ch_ratio_filtered"][event_subgroup]):
                     if not (len(event_subgroup) in mapping["events_ch_ratio_merged_header"]):
                         mapping["events_ch_ratio_merged_header"][len(event_subgroup)] = []
-                    mapping["events_ch_ratio_merged_header"][len(event_subgroup)].append({
-                        "idx": mapping["events_ch_ratio_merged"].shape[0],
-                        "events": {*event_subgroup}
-                    })
-                    np.vstack(mapping["events_ch_ratio_merged"], np.mean(mapping["events_ch_ratio_filtered"][event_subgroup,:]))
+                    mapping["events_ch_ratio_merged_header"][len(event_subgroup)].append((mapping["events_ch_ratio_merged"].shape[0], {*event_subgroup}))
+                    mapping["events_ch_ratio_merged"] = np.vstack((mapping["events_ch_ratio_merged"], np.mean(mapping["events_ch_ratio_filtered"][event_subgroup,:], axis=0)))
                 # not similar -> we have to go down to smaller subgroups
                 else:
-                    event_subgroup_queue.extend([x for x in EventSubgroupGenerator(event_subgroup, len(event_subgroup) - 1)])
+                    for new_subgroup in EventSubgroupGenerator(event_subgroup, len(event_subgroup) - 1):
+                        new_subgroup_fs = frozenset(new_subgroup)
+                        if new_subgroup_fs not in added_subgroups:
+                            event_subgroup_queue.append(new_subgroup)
+                            added_subgroups.add(new_subgroup_fs)
+
+    def getEventGroupLabel(self, event_group):
+        return ", ".join([self.events_[x][0] for x in event_group])
+
+    def findBestEventPageMappingByGroupSize(self, event, group_size, events_covered):
+        best_candidate = None
+        # check each mapping
+        for mapping in self.pc_mappings_:  
+            # check event subgroups with wanted group size 
+            # does not exist -> skip mapping
+            if group_size not in mapping["events_ch_ratio_merged_header"]:
+                continue          
+            for row, event_subgroup in mapping["events_ch_ratio_merged_header"][group_size]:
+                # is target event in subgroup at all?
+                # -> no, continue
+                if event not in event_subgroup:
+                    continue
+
+                # calculate event-fitness matrix (events other than the target are treated as noise)
+                event_fitness = mapping["events_ch_ratio_merged"][row] - np.sqrt(np.sum(mapping["events_ch_ratio_merged"]**2, axis=0) - mapping["events_ch_ratio_merged"][row]**2)
+                candidate_page = np.argmax(event_fitness)
+                candidate_page_fitness = event_fitness[candidate_page]
+                # does not fullfil our minimum requirements -> continue
+                if candidate_page_fitness <= self.fitness_threshold_train_:
+                    continue
+                candidate_group = event_subgroup - events_covered
+                candidate_group_size = len(candidate_group)
+                # not better than what we already have -> continue
+                if (best_candidate and 
+                    candidate_group_size >= len(best_candidate["event_group_filtered"]) and 
+                    candidate_page_fitness <= best_candidate["fitness"]):
+                    continue
+
+                #  better candidate -> remember
+                best_candidate = {
+                    "fitness": candidate_page_fitness,
+                    "file": mapping["path"],
+                    "offset": mapping["file_offset"] + candidate_page * mmap.PAGESIZE,
+                    "current_pfn": mapping["pfns"][candidate_page],
+                    "event_group": event_subgroup,
+                    "event_group_filtered": candidate_group,
+                    "event_group_labels": self.getEventGroupLabel(event_subgroup),
+                    "event_group_filtered_labels": self.getEventGroupLabel(candidate_group)
+                }
+
+        return best_candidate
 
     def findEventSinglePageMappings(self):
         found_optimal_mappings = []
-        for event_nr in len(self.events_):
-            for cluster_size in len(self.events_):
-                for mapping in self.pc_mappings_:                     
-                    mapping["events_ch_ratio_merged_header"][cluster_size]
+        events_to_search = set(range(len(self.events_)))
+        events_covered = set()
+
+        # try to find the best single pages that describe our events
+        # start out with minimal event group size
+        #   -> if no canidate is found increase it and retry
+        for group_size in range(1, len(self.events_) + 1):
+            events_to_search_next = set()
+            while len(events_to_search) > 0:
+                target_event = events_to_search.pop()
+                best_candidate = self.findBestEventPageMappingByGroupSize(target_event, group_size, events_covered)
+                if best_candidate is None:
+                    events_to_search_next.add(target_event)
+                else:
+                    events_covered = events_covered.union(best_candidate["event_group"])
+                    events_to_search -= best_candidate["event_group"]
+                    found_optimal_mappings.append(best_candidate)
+            events_to_search = events_to_search_next
+
+        if len(events_to_search) != 0:
+            return None
+        
+        return found_optimal_mappings
 
     def train(self):
         # 1. Compute raw cache-hit ratios
         self.computeChRatios()
         # 2. Filter pfns with similar ch ratio
-        #   -> Set to zero everywhere -> common to all events
+        #   -> set all ch ratios accross events to zero
         self.filterPfnsWithSimilarChRatio()
         # 3. Group similar events
+        #   -> metric: all events have small deviation from their mean
         self.groupSimilarEvents()
         # 4. Search optimal set of event-page mappings to describe events
-        # if a event optimally is only describeable using multiple pages -> error 
-        self.findEventSinglePageMappings()
+        #   -> fails if not all events are somehow describeable using single pages
+        self.optimal_event_file_offset_mappings_ = self.findEventSinglePageMappings()
+        if self.optimal_event_file_offset_mappings_ is None:
+            print("Training failed - could not find suitable pages!")
+            return None 
         results = {
             "event_strings": [e[0] for e in self.events_],
             "raw_data": self.pc_mappings_,
-            "event_to_file_page_mapping": self.event_to_file_page_mapping_
+            "optimal_event_file_offset_mappings": self.optimal_event_file_offset_mappings_
         }
         return results
 
     def printResults(self):
-        for event_file_pages in self.event_to_file_page_mapping_.values():
-            if len(event_file_pages) > 0 and event_file_pages[0]["fitness"][1] > self.fitness_threshold_print_:
-                event_string = ", ".join([self.events_[e][0] for e in event_file_pages[0]["events"]])
-                print("Event: {}".format(event_string))
-            else:
-                continue
-            for event_file_page in event_file_pages:
-                if event_file_page["fitness"][1] > self.fitness_threshold_print_:
-                    print("Fitness: {}, File: {}, Offset: 0x{:x}, Current PFN: 0x{:x}".format(event_file_page["fitness"][1], event_file_page["path"], event_file_page["file_offset"], event_file_page["current_pfn"]))
-
-
+        if self.optimal_event_file_offset_mappings_ is None:
+            print("No results available!")
+            return
+        print("")
+        for optimal_mapping in self.optimal_event_file_offset_mappings_:
+            print("Event Group (raw): {}".format(optimal_mapping["event_group_labels"]))
+            print("Event Group (filtered): {}".format(optimal_mapping["event_group_filtered_labels"]))
+            print("Fitness: {}".format(optimal_mapping["fitness"]))
+            print("File Path: {} Offset: 0x{:x} Current PFN: 0x{:x}".format(optimal_mapping["file"], optimal_mapping["offset"], optimal_mapping["current_pfn"]))
+            print("")
 
 
 def dofakeEvent():
@@ -428,11 +401,11 @@ def doKeyboardEvent(sc):
     time.sleep(0.1)
 
 def prepareKeyEvents():
-    scan_codes = [0x29, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b,
-        0x0c, 0x0d, 0x0e, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, # 0x0f <- tab
-        0x1a, 0x1b, 0x1c, 0x3a, 0x1e, 0x1f, 0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26,
-        0x27, 0x28, 0x2b, 0x2a, 0x56, 0x2c, 0x2d, 0x2e, 0x2f, 0x30, 0x31, 0x32, 0x33,
-        0x34, 0x35, 0x36, 0x1d, 0x38, 0x39, 0xe038, 0xe05d, 0xe01d]
+    scan_codes = [0x29, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b,
+        0x0c, 0x0d, 0x0e, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19]#, # 0x0f <- tab
+        #0x1a, 0x1b, 0x1c, 0x3a, 0x1e, 0x1f, 0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26,
+        #0x27, 0x28, 0x2b, 0x2a, 0x56, 0x2c, 0x2d, 0x2e, 0x2f, 0x30, 0x31, 0x32, 0x33,
+        #0x34, 0x35, 0x36, 0x1d, 0x38, 0x39, 0xe038, 0xe05d, 0xe01d]
     events = [ ("sc_" + hex(x), functools.partial(doKeyboardEvent, x)) for x in scan_codes ]
     events.append(("fake", dofakeEvent))
     return events
@@ -447,7 +420,7 @@ def autoCampaignPrepareEvents():
 parser = argparse.ArgumentParser(description="Profiles which pae offsets of files are accessed in case of an event.")
 group_ex = parser.add_mutually_exclusive_group()
 group_ex.add_argument("--collect", type=int, nargs=2, metavar=("pid", "samples"), help="collect data, pid + samples needed")
-group_ex.add_argument("--load", type=str, help="loads raw results from a json file and processes them again")
+group_ex.add_argument("--load", type=str, metavar=("path to stored results"), help="loads raw results from a json file and processes them again")
 parser.add_argument("--event_user", type=str, action="append", metavar=("NAME"), help="use manually triggered events (else coded in events are used)")
 parser.add_argument("--event_user_no_input", action="store_true", help="do not ask for event completion, but use a wait time instead")
 parser.add_argument("--tracer", action="store_true", help="starts a interactive tracer afterwards")
@@ -456,7 +429,7 @@ args = parser.parse_args()
 
 signal.signal(signal.SIGINT, signal.default_int_handler)
 
-classifier = SinglePageClassifier(0.6, 0.6)
+classifier = SinglePageClassifier(0.6, 0.1)
 
 events = None 
 pid = None 
@@ -472,7 +445,6 @@ if args.load:
 elif args.collect:
     pid = args.collect[0]
     samples = args.collect[1]
-
     # prepare events 
     events = []
     if args.event_user:
@@ -487,6 +459,9 @@ elif args.collect:
 
     # collect page access data from process
     classifier.collect(events, samples, pid)
+else:
+    print("Wrong usage: Consult help.")
+    exit(-1)
 
 # process data
 results = classifier.train()
