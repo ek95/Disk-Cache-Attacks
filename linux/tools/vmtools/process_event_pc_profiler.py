@@ -369,15 +369,15 @@ def dofakeEvent():
     time.sleep(0.1)
 
 
-def doUserEventNoInput():
-    print("Trigger Event...")
+def doUserEventNoInput(event):
+    print("Trigger Event: " + event)
     time.sleep(3)
     print("STOP")
     time.sleep(1)
     print("!!!")
 
-def doUserEvent():
-    print("Trigger Event....")
+def doUserEvent(event):
+    print("Trigger Event: " + event)
     input("Press key when ready...")
 
 
@@ -445,7 +445,7 @@ elif args.collect:
     # prepare events
     events = []
     if args.event_user:
-        events = [(x, doUserEventNoInput if args.event_user_no_input else doUserEvent)
+        events = [(x, functools.partial(doUserEventNoInput, x) if args.event_user_no_input else functools.partial(doUserEvent, x))
                   for x in args.event_user]
     else:
         events = autoCampaignPrepareEvents()
