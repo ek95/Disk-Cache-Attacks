@@ -19,29 +19,29 @@ import string
 import pdb
 
 
-def createEventPageHitHeatmap(file_path, file_offset, hit_data_raw, max_val,
-                              pages_per_row=16, show=True, save=False):
-    # remove negative numbers + scale
-    data = [x if x >= 0 else 0 for x in hit_data_raw]
+def createPageCacheHitHeatmap(event_cache_hits, page_range, mapping_page_offset, title,
+    pages_per_row=16, show=True, save=False):
+    # offset 
+    offset  = page_range[0]
+    length = page_range[1]
     # reorganize data
-    data = [data[i: i + pages_per_row]
-            for i in range(0, len(data), pages_per_row)]
+    data = [event_cache_hits[i : i + pages_per_row]
+            for i in range(offset, offset + length, pages_per_row)]
     if len(data) > 1 and len(data[-1]) < pages_per_row:
         data[-1] += [0] * (pages_per_row - len(data[-1]))
     # generate x labels
     x_labels = ["{:x}".format(o) for o in range(
         0, len(data[0]) if len(data) == 1 else pages_per_row)]
-    file_offset_pages = int(file_offset / mmap.PAGESIZE)
     y_labels = ["0x{:x}".format(o) for o in range(
-        file_offset_pages, file_offset_pages + len(data) * pages_per_row, pages_per_row)]
+        mapping_page_offset + offset, mapping_page_offset + offset + len(data) * pages_per_row, pages_per_row)]
 
     # new plot
     fig, ax = plt.subplots()  # figsize=())
     # use imshow
-    im = ax.imshow(np.array(data), cmap=plt.cm.Greys, vmin=0, vmax=max_val)
+    im = ax.imshow(np.array(data), cmap=plt.cm.Greys, vmin=0, vmax=1)
 
     # create colorbar
-    cbar = ax.figure.colorbar(im, ax=ax, ticks=range(0, max_val + 1))
+    cbar = ax.figure.colorbar(im, ax=ax, ticks=range(0, 1))
     cbar.ax.set_ylabel("Hits", rotation=-90, va="bottom")
 
     # major ticks
@@ -58,11 +58,11 @@ def createEventPageHitHeatmap(file_path, file_offset, hit_data_raw, max_val,
     ax.grid(which="minor", color="black", linestyle="-", linewidth=1)
 
     # title is file path
-    ax.set_title(file_path)
+    ax.set_title(title)
     fig.tight_layout()
 
     if save:
-        plt.savefig(os.path.basename(file_path) + ".hits" + ".pdf", dpi=300)
+        plt.savefig(title + ".pdf", dpi=300)
     if show:
         plt.show()
     plt.close()
@@ -155,10 +155,12 @@ class Classifier:
 
 # requires last event to be the "idle" event!
 class SinglePageHitClassifier(Classifier):
-    def __init__(self, fitness_threshold_train, ch_ratios_filter_threshold):
+    def __init__(self, fitness_threshold_train, ch_ratios_filter_threshold, fault_ra_window, debug_heatmaps = False):
         super().__init__(fitness_threshold_train)
         self.optimal_event_file_offset_mappings_ = None
         self.ch_ratios_filter_threshold_ = ch_ratios_filter_threshold
+        self.fault_ra_window_ = fault_ra_window
+        self.debug_heatmaps_ = debug_heatmaps
 
     def collectPrepare_(self, pc_mappings):
         # prepare mapping objects for storing results
@@ -242,11 +244,12 @@ class SinglePageHitClassifier(Classifier):
                     np.mean(mapping["events_ch_ratios_filtered"][merged_events, :], axis=0)))
 
                 # continue processing with missing events
-                events_to_process = not_merged_events
+                events_to_process = not_merged_events        
 
     def getEventGroupLabel(self, event_group):
         return ", ".join([self.events_[x][0] for x in event_group])
 
+    # negative ch ratios are not clipped, we anyhow only care about hits
     def findBestEventPageHitMappingByGroupSize(self, event, group_size, events_covered):
         best_candidate = None
         # check each mapping
@@ -262,9 +265,30 @@ class SinglePageHitClassifier(Classifier):
                 if (event not in event_subgroup) or (len(self.events_) - 1 in event_subgroup):
                     continue
 
-                # calculate event-fitness matrix (events other than the target are treated as noise)
+                # calculate event-fitness matrix 
+                # 1) events other than the target are treated as noise
+                # noise is calculated using the root of the sum of the squared ch ratios of all other events 
+                # this sum is always bigger than the maximum ch ratio but smaller than a comparable abs sum 
+                # therefore, lower values are honored a bit less (not so realistic that all events are triggered during one sample run)
                 event_fitness = mapping["events_ch_ratios_merged"][row] - np.sqrt(np.sum(
                     mapping["events_ch_ratios_merged"]**2, axis=0) - mapping["events_ch_ratios_merged"][row]**2)
+                # 2) (optionally) readahead window is treated as noise
+                if self.fault_ra_window_ != 0:
+                    event_fitness_ra = event_fitness.copy()
+                    back_trigger_ra_window = int(self.fault_ra_window_ / 2) - 1
+                    front_trigger_ra_window = int(self.fault_ra_window_ / 2)
+                    # use raw matrix, in later ones values are removed or merged which we do not want here
+                    rh_ch_sum = np.sqrt(np.sum(mapping["events_ch_ratios_raw"]**2, axis=0))
+                    for p in range(event_fitness.shape[0]):
+                        # readahead behaves different inside the first possible window
+                        # (front readahead increases if less than the default amount of back readahead was made)
+                        if p < self.fault_ra_window_:
+                            event_fitness_ra[p] = event_fitness[p] - np.sqrt(np.sum(rh_ch_sum[p - (self.fault_ra_window_ - 1) : p]**2) + 
+                                np.sum(rh_ch_sum[p + 1 : p + 1 + front_trigger_ra_window ]**2)) 
+                        else:
+                            event_fitness_ra[p] = event_fitness[p] - np.sqrt(np.sum(rh_ch_sum[p - back_trigger_ra_window : p]**2) + 
+                                np.sum(rh_ch_sum[p + 1 : p + 1 + front_trigger_ra_window ]**2))  
+                    event_fitness = event_fitness_ra
                 candidate_page = np.argmax(event_fitness)
                 candidate_page_fitness = event_fitness[candidate_page]
                 # does not fullfil our minimum requirements -> continue
@@ -287,7 +311,8 @@ class SinglePageHitClassifier(Classifier):
                     "event_group": event_subgroup,
                     "event_group_filtered": candidate_group,
                     "event_group_labels": self.getEventGroupLabel(event_subgroup),
-                    "event_group_filtered_labels": self.getEventGroupLabel(candidate_group)
+                    "event_group_filtered_labels": self.getEventGroupLabel(candidate_group),
+                    "link_to_mapping": mapping
                 }
 
         return best_candidate
@@ -361,8 +386,25 @@ class SinglePageHitClassifier(Classifier):
             print("Fitness: {}".format(optimal_mapping["fitness"]))
             print("File Path: {} Offset: 0x{:x} Current PFN: 0x{:x}".format(
                 optimal_mapping["file"], optimal_mapping["offset"], optimal_mapping["current_pfn"]))
-            print("")
-
+            print("")   
+            
+        # (Optional Debug) Print raw ch heatmaps for all events in vicinity of selected page
+        # allow visual inspection to ensure algorithm works right
+        if self.debug_heatmaps_:
+            for result in self.optimal_event_file_offset_mappings_:
+                print("Event Group (raw): {}".format(result["event_group_labels"]))
+                print("File Path: {} Offset: 0x{:x}".format(
+                    result["file"], result["offset"]))
+                mapping_offset_pages = int(result["link_to_mapping"]["file_offset"] / mmap.PAGESIZE)
+                candidate_page = int(result["offset"] / mmap.PAGESIZE) - mapping_offset_pages
+                show_page_range_start = candidate_page - 128           
+                show_page_range_start = 0 if show_page_range_start < 0 else show_page_range_start
+                show_page_range_len = int(result["link_to_mapping"]["size"] / mmap.PAGESIZE) - show_page_range_start
+                show_page_range_len = 256 if show_page_range_len > 256 else show_page_range_len
+                for event in result["event_group"]:
+                    createPageCacheHitHeatmap(result["link_to_mapping"]["events_ch_ratios_raw"][event], 
+                        (show_page_range_start, show_page_range_len), mapping_offset_pages, self.events_[event][0] + "\n" + result["file"])
+                input("Press key for next event group...\n")
 
 def dofakeEvent():
     # sleep a bit
@@ -423,7 +465,7 @@ args = parser.parse_args()
 
 signal.signal(signal.SIGINT, signal.default_int_handler)
 
-classifier = SinglePageHitClassifier(0.7, 0.1)
+classifier = SinglePageHitClassifier(0.7, 0.1, 32, True)
 
 events = None
 pid = None
@@ -486,6 +528,8 @@ if args.save:
         mapping["offset"] = int(mapping["offset"])
         mapping["event_group"] = list(mapping["event_group"])
         mapping["event_group_filtered"] = list(mapping["event_group_filtered"])
+        # remove not needed data
+        del mapping["link_to_mapping"]
     with open(args.save, "w") as file:
         file.write(json.dumps(results, indent=4))
 
