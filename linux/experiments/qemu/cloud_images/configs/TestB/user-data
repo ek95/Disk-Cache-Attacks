@@ -1,0 +1,20 @@
+#cloud-config
+hostname: TestB
+manage_etc_hosts: true
+users:
+  - name: vmadm
+    ssh-authorized-keys:
+      - ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAACAQDHrfZXgZyj4KAL0A+TT6i9bIZgjoSRC3jTukNkig9tfalgpDKlts2lrdrRi4j8zcGlQ9cW86x6DDLmsqQ5bpuQRRlhZlJYViou6pbMH1/IgwXGaU67Hz6E5jpKiL5eNZbieta5FeDXGrqZwnNk2Z6GjpGBdxgviSt17+8HIpv6PB/4iqLucwVuUULM/xeAGhqYOZt0zzBMC/K8A5YZ/FDJ8/vAFK9sWjuF5oLTIR2H0lziQoGqvJ5EOyFL6pT4UB0Sj+Zj/mgnxpc6eJlo048dgXh30OMnaET1CM7gGBj7UN6DjYqEHsycJyfjDMQ46NRYKUU73F85ispoi48ItLYXqiyyGAgndSVjoRAajXoDKlAm7NQ+O9oBtvdNt6dScVrZvHsAJB2RL7dhMCkt8Ludiz6oHLlVDYp5FwMYdSRVgir4m6JL42IMIFe7JtO1vB8HaQcG9+oU3Dwfa8KZbe7gPxjg3JKFGGsls1bMQacJDCKctbm79r8YqrCsHbsr9TOymnFYmYed+hbR/t3WIyEUVcUmtoGVaIok61VqUD41ZdQH6MBvIc7chliKm02uyOCIVxdvoUJgwuGWLsd3CT+RUk6XfkPZTLp8dyl2n+10X7Uz3wOI12wuxe0pxYEJeg5MR0tanGs1zSyMn3mSWGir1OQPtITKkFkbA/JgSFY5/Q== erik.kraft5@gmx.at
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    groups: users, admin
+    home: /home/vmadm
+    shell: /bin/bash
+    lock_passwd: false
+runcmd:
+  - echo "AllowUsers vmadm" >> /etc/ssh/sshd_config
+  - restart ssh
+disable_root: false
+chpasswd:
+  list: |
+    vmadm:vmadm
+  expire: false

@@ -1,0 +1,167 @@
+Event Group (raw): sc_0x2
+Event Group (filtered): sc_0x2
+Fitness: 0.9500000000000005
+File Path: /snap/chromium/1608/usr/lib/chromium-browser/chrome Offset: 0x1384000 Current PFN: 0x22eb63
+
+Event Group (raw): sc_0x3
+Event Group (filtered): sc_0x3
+Fitness: 0.9399074787422677
+File Path: /snap/chromium/1608/usr/lib/chromium-browser/chrome Offset: 0x137e000 Current PFN: 0x22d9cd
+
+Event Group (raw): sc_0x4
+Event Group (filtered): sc_0x4
+Fitness: 0.8101332501040575
+File Path: /snap/chromium/1608/usr/lib/chromium-browser/chrome Offset: 0x137a000 Current PFN: 0x22d9c9
+
+Event Group (raw): sc_0x5
+Event Group (filtered): sc_0x5
+Fitness: 0.7841182308030517
+File Path: /snap/chromium/1608/usr/lib/chromium-browser/chrome Offset: 0x1377000 Current PFN: 0x22d9c6
+
+Event Group (raw): sc_0x6
+Event Group (filtered): sc_0x6
+Fitness: 0.923623738417404
+File Path: /snap/chromium/1608/usr/lib/chromium-browser/chrome Offset: 0x1376000 Current PFN: 0x22d9c5
+
+Event Group (raw): sc_0x7
+Event Group (filtered): sc_0x7
+Fitness: 0.7873593421221717
+File Path: /snap/chromium/1608/usr/lib/chromium-browser/chrome Offset: 0x1374000 Current PFN: 0x22d9c3
+
+Event Group (raw): sc_0x8
+Event Group (filtered): sc_0x8
+Fitness: 0.7216117818585
+File Path: /snap/chromium/1608/usr/lib/chromium-browser/chrome Offset: 0x1373000 Current PFN: 0x22d9c2
+
+Event Group (raw): sc_0xa
+Event Group (filtered): sc_0xa
+Fitness: 0.9422649730810386
+File Path: /snap/chromium/1608/usr/lib/chromium-browser/chrome Offset: 0x1370000 Current PFN: 0x22d9bf
+
+Event Group (raw): sc_0xb
+Event Group (filtered): sc_0xb
+Fitness: 0.9591751709536133
+File Path: /snap/chromium/1608/usr/lib/chromium-browser/chrome Offset: 0x1389000 Current PFN: 0x22eb68
+
+Event Group (raw): sc_0xd
+Event Group (filtered): sc_0xd
+Fitness: 0.9376390435537681
+File Path: /snap/chromium/1608/usr/lib/chromium-browser/chrome Offset: 0x11c3000 Current PFN: 0x22de79
+
+Event Group (raw): sc_0xe
+Event Group (filtered): sc_0xe
+Fitness: 1.0
+File Path: /snap/chromium/1608/usr/lib/chromium-browser/chrome Offset: 0x4024000 Current PFN: 0x23a514
+
+Event Group (raw): sc_0x12
+Event Group (filtered): sc_0x12
+Fitness: 0.9591751709536133
+File Path: /snap/chromium/1608/usr/lib/chromium-browser/chrome Offset: 0x132e000 Current PFN: 0x22c4c7
+
+Event Group (raw): sc_0x13
+Event Group (filtered): sc_0x13
+Fitness: 0.9591751709536133
+File Path: /snap/chromium/1608/usr/lib/chromium-browser/chrome Offset: 0x1314000 Current PFN: 0x22d964
+
+Event Group (raw): sc_0x14
+Event Group (filtered): sc_0x14
+Fitness: 0.9500000000000005
+File Path: /snap/chromium/1608/usr/lib/chromium-browser/chrome Offset: 0x1306000 Current PFN: 0x22d956
+
+Event Group (raw): sc_0x16
+Event Group (filtered): sc_0x16
+Fitness: 0.8130821795415488
+File Path: /snap/chromium/1608/usr/lib/chromium-browser/chrome Offset: 0x1304000 Current PFN: 0x22d954
+
+Event Group (raw): sc_0x1c
+Event Group (filtered): sc_0x1c
+Fitness: 0.9333333333333333
+File Path: /snap/chromium/1608/usr/lib/chromium-browser/chrome Offset: 0x3602000 Current PFN: 0x2344aa
+
+Event Group (raw): sc_0x1e
+Event Group (filtered): sc_0x1e
+Fitness: 0.9591751709536133
+File Path: /snap/chromium/1608/usr/lib/chromium-browser/chrome Offset: 0x1352000 Current PFN: 0x22c4ae
+
+Event Group (raw): sc_0x1f
+Event Group (filtered): sc_0x1f
+Fitness: 0.7329285479617359
+File Path: /snap/chromium/1608/usr/lib/chromium-browser/chrome Offset: 0x130c000 Current PFN: 0x22d95c
+
+Event Group (raw): sc_0x20
+Event Group (filtered): sc_0x20
+Fitness: 0.8101332501040557
+File Path: /snap/chromium/1608/usr/lib/chromium-browser/chrome Offset: 0x133e000 Current PFN: 0x22c49a
+
+Event Group (raw): sc_0x21
+Event Group (filtered): sc_0x21
+Fitness: 0.8101332501040562
+File Path: /snap/chromium/1608/usr/lib/chromium-browser/chrome Offset: 0x132d000 Current PFN: 0x22c4c6
+
+Event Group (raw): sc_0x23
+Event Group (filtered): sc_0x23
+Fitness: 0.8130821795415483
+File Path: /snap/chromium/1608/usr/lib/chromium-browser/chrome Offset: 0x1329000 Current PFN: 0x22c4c2
+
+Event Group (raw): sc_0x25
+Event Group (filtered): sc_0x25
+Fitness: 0.9500000000000005
+File Path: /snap/chromium/1608/usr/lib/chromium-browser/chrome Offset: 0x1326000 Current PFN: 0x22c4bf
+
+Event Group (raw): sc_0x26
+Event Group (filtered): sc_0x26
+Fitness: 0.8698291720682225
+File Path: /snap/chromium/1608/usr/lib/chromium-browser/chrome Offset: 0x1323000 Current PFN: 0x22c4bc
+
+Event Group (raw): sc_0x2d
+Event Group (filtered): sc_0x2d
+Fitness: 0.9500000000000005
+File Path: /snap/chromium/1608/usr/lib/chromium-browser/chrome Offset: 0x12ff000 Current PFN: 0x22cd4b
+
+Event Group (raw): sc_0x2e
+Event Group (filtered): sc_0x2e
+Fitness: 0.9591751709536133
+File Path: /snap/chromium/1608/usr/lib/chromium-browser/chrome Offset: 0x1349000 Current PFN: 0x22c4a5
+
+Event Group (raw): sc_0x2f
+Event Group (filtered): sc_0x2f
+Fitness: 0.9500000000000005
+File Path: /snap/chromium/1608/usr/lib/chromium-browser/chrome Offset: 0x1301000 Current PFN: 0x22d951
+
+Event Group (raw): sc_0x31
+Event Group (filtered): sc_0x31
+Fitness: 0.9591751709536133
+File Path: /snap/chromium/1608/usr/lib/chromium-browser/chrome Offset: 0x131b000 Current PFN: 0x22d96b
+
+Event Group (raw): sc_0x39
+Event Group (filtered): sc_0x39
+Fitness: 0.9609770666149667
+File Path: /snap/chromium/1608/usr/lib/chromium-browser/chrome Offset: 0x238f000 Current PFN: 0x22eb34
+
+Event Group (raw): sc_0x10, sc_0x19
+Event Group (filtered): sc_0x10, sc_0x19
+Fitness: 0.9627322003750036
+File Path: /snap/chromium/1608/usr/lib/chromium-browser/chrome Offset: 0x1319000 Current PFN: 0x22d969
+
+Event Group (raw): sc_0x24, sc_0x17
+Event Group (filtered): sc_0x24, sc_0x17
+Fitness: 0.7880135107962354
+File Path: /snap/chromium/1608/usr/lib/chromium-browser/chrome Offset: 0x1328000 Current PFN: 0x22c4c1
+
+Event Group (raw): sc_0x2a, sc_0x36, sc_0x1d, sc_0x38, sc_0x3a
+Event Group (filtered): sc_0x2a, sc_0x36, sc_0x1d, sc_0x38, sc_0x3a
+Fitness: 1.0
+File Path: /snap/chromium/1608/gnome-platform/usr/lib/x86_64-linux-gnu/libgdk-3.so.0.2200.30 Offset: 0x33000 Current PFN: 0x22943f
+
+Event Group (raw): sc_0x2, sc_0x3, sc_0x4, sc_0x5, sc_0x6, sc_0x7, sc_0x8, sc_0x9, sc_0xa, sc_0xb, sc_0xc, sc_0xe, sc_0x10, sc_0x11, sc_0x12, sc_0x13, sc_0x14, sc_0x15, sc_0x16, sc_0x17, sc_0x18, sc_0x19, sc_0x1a, sc_0x1b, sc_0x1e, sc_0x1f, sc_0x20, sc_0x21, sc_0x22, sc_0x23, sc_0x24, sc_0x25, sc_0x26, sc_0x27, sc_0x28, sc_0x2b, sc_0x56, sc_0x2c, sc_0x2d, sc_0x2e, sc_0x2f, sc_0x30, sc_0x31, sc_0x32, sc_0x33, sc_0x34, sc_0x35, sc_0x39
+Event Group (filtered): sc_0x22, sc_0x27, sc_0x28, sc_0x2b, sc_0x9, sc_0x56, sc_0x2c, sc_0xc, sc_0x30, sc_0x11, sc_0x32, sc_0x33, sc_0x34, sc_0x15, sc_0x35, sc_0x18, sc_0x1a, sc_0x1b
+Fitness: 0.9812499999999997
+File Path: /snap/chromium/1608/usr/lib/chromium-browser/chrome Offset: 0x9af0000 Current PFN: 0x222ff1
+
+Event Group (raw): sc_0x29, sc_0x2, sc_0x3, sc_0x4, sc_0x5, sc_0x6, sc_0x7, sc_0x8, sc_0x9, sc_0xa, sc_0xb, sc_0xc, sc_0xd, sc_0xe, sc_0x10, sc_0x11, sc_0x12, sc_0x13, sc_0x14, sc_0x15, sc_0x16, sc_0x17, sc_0x18, sc_0x19, sc_0x1a, sc_0x1b, sc_0x1c, sc_0x1e, sc_0x1f, sc_0x20, sc_0x21, sc_0x22, sc_0x23, sc_0x24, sc_0x25, sc_0x26, sc_0x27, sc_0x28, sc_0x2b, sc_0x56, sc_0x2c, sc_0x2d, sc_0x2e, sc_0x2f, sc_0x30, sc_0x31, sc_0x32, sc_0x33, sc_0x34, sc_0x35, sc_0x39
+Event Group (filtered): sc_0x29
+Fitness: 1.0
+File Path: /snap/chromium/1608/gnome-platform/usr/lib/x86_64-linux-gnu/libgtk-3.so.0.2200.30 Offset: 0x6f4000 Current PFN: 0x20fc57
+
+FUCKING READAHEAD !!!!
+16 pages back 15 front !

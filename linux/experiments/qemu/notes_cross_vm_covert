@@ -1,0 +1,9 @@
+root       15589    6058  2 13:44 ?        00:00:24 /snap/multipass/4458/usr/bin/qemu-system-x86_64 --enable-kvm -device virtio-scsi-pci,id=scsi0 -drive file=/var/snap/multipass/common/data/multipassd/vault/instances/TestB/ubuntu-20.04-server-cloudimg-amd64.img,if=none,format=qcow2,discard=unmap,id=hda -device scsi-hd,drive=hda,bus=scsi0.0 -smp 1 -m 1024M -device virtio-net-pci,netdev=hostnet0,id=net0,mac=52:54:00:20:2c:29 -netdev tap,id=hostnet0,ifname=tap-ebcebeff142,script=no,downscript=no -qmp stdio -cpu host -chardev null,id=char0 -serial chardev:char0 -nographic -cdrom /var/snap/multipass/common/data/multipassd/vault/instances/TestB/cloud-init-config.iso
+root       15878    6058  2 13:46 ?        00:00:16 /snap/multipass/4458/usr/bin/qemu-system-x86_64 --enable-kvm -device virtio-scsi-pci,id=scsi0 -drive file=/var/snap/multipass/common/data/multipassd/vault/instances/TestA/ubuntu-20.04-server-cloudimg-amd64.img,if=none,format=qcow2,discard=unmap,id=hda -device scsi-hd,drive=hda,bus=scsi0.0 -smp 1 -m 1024M -device virtio-net-pci,netdev=hostnet0,id=net0,mac=52:54:00:9a:52:14 -netdev tap,id=hostnet0,ifname=tap-802c603f6e3,script=no,downscript=no -qmp stdio -cpu host -chardev null,id=char0 -serial chardev:char0 -nographic -cdrom /var/snap/multipass/common/data/multipassd/vault/instances/TestA/cloud-init-config.iso
+erik       16456    4958  0 13:58 pts/0    00:00:00 grep --color=auto qemu
+
+qcow2 -> copy on write format?
+	-> is used, see also https://www.unixmen.com/qemu-kvm-using-copy-write-mode/
+	-> host page cache should also be used
+	-> seems not to show in timing
+	-> check if base image access pattern changes

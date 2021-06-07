@@ -1,0 +1,3 @@
+used image: https://cloud-images.ubuntu.com/focal/current/focal-server-cloudimg-amd64-disk-kvm.img
+instructions to set up with libvirt: https://medium.com/@yping88/use-ubuntu-server-20-04-cloud-image-to-create-a-kvm-virtual-machine-with-fixed-network-properties-62ecae025f6c
+bugfix: https://libvirt.org/kbase/backing_chains.html
