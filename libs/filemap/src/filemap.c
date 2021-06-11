@@ -77,6 +77,10 @@ static inline int fileFlags2openFlags(int file_flags)
     flags |= O_WRONLY;
   }
 
+  if(file_flags & FILE_NOATIME) {
+      flags |= O_NOATIME;
+  }
+
   return flags;
 }
 
@@ -104,6 +108,11 @@ static inline int mappingFlags2mmapFlags(int mapping_flags)
 int mapFile(FileMapping *file_mapping, const char *file_path, int file_flags, int mapping_flags)
 {
   struct stat file_stat;
+
+  // do nothing if already mapped
+  if (file_mapping->addr_ != NULL) {
+      return 0;
+  }
 
   // open file (if not already done)
   if (file_mapping->internal_.fd_ == -1)
@@ -440,9 +449,15 @@ static inline DWORD mappingFlags2mapViewOfFileAccess(int mapping_flags)
   return flags;
 }
 
+// if already mapped nothing happens, close first to remap!
 int mapFile(FileMapping *file_mapping, const char *file_path, int file_flags, int mapping_flags)
 {
   LARGE_INTEGER file_size;
+
+  // do nothing if already mapped
+  if (file_mapping->addr_ != NULL) {
+      return 0;
+  }
 
   // open file (if not already done)
   if (file_mapping->internal_.file_handle_ == INVALID_HANDLE_VALUE)
@@ -453,7 +468,12 @@ int mapFile(FileMapping *file_mapping, const char *file_path, int file_flags, in
                                                      FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL | fileFlags2createFileFlags(file_flags), NULL);
     if (file_mapping->internal_.file_handle_ == INVALID_HANDLE_VALUE)
     {
-      goto error;
+        goto error;
+    }
+
+    if(file_flags & FILE_NOATIME) {
+        static const FILETIME ft_leave_unchanged = { 0xFFFFFFFF, 0xFFFFFFFF };
+        SetFileTime(file_mapping->internal_.file_handle_, NULL, &ft_leave_unchanged, NULL);
     }
   }
 
@@ -708,6 +728,7 @@ static int doFcStateAccess(FileMapping *file_mapping, size_t offset, size_t leng
     tmp = *current_addr;
     TSC_BENCH_STOP(end_cycle);
     uint64_t access_time = tsc_bench_get_runtime_ns(start_cycle, end_cycle);
+    printf("Time: %zuns\n", access_time);
     *vec = access_time < DISK_ACCESS_THRESHOLD_NS;
   }
 

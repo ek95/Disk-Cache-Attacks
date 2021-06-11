@@ -12,10 +12,11 @@
 // file specifiers
 #define FILE_ACCESS_READ 0x01
 #define FILE_ACCESS_WRITE 0x02
+#define FILE_NOATIME 0x04
 // only windows
-#define FILE_ACCESS_EXECUTE 0x04
-#define FILE_USAGE_RANDOM 0x08
-#define FILE_USAGE_SEQUENTIAL 0x10
+#define FILE_ACCESS_EXECUTE (0x01 << 16)
+#define FILE_USAGE_RANDOM (0x02 << 16)
+#define FILE_USAGE_SEQUENTIAL (0x04 << 16)
 
 // mapping specifiers
 #define MAPPING_ACCESS_READ 0x01
@@ -24,16 +25,16 @@
 #define MAPPING_PRIVATE 0x08
 #define MAPPING_SHARED 0x10
 // only windows
-#define MAPPING_LARGE_PAGES 0x20
+#define MAPPING_LARGE_PAGES (0x01 << 16)
 
 // query file cache state sources
 // shared 
 #define FC_SOURCE_ACCESS 0x00
 // linux
-#define FC_SOURCE_MINCORE 0x01
-#define FC_SOURCE_PREADV2 0x02
+#define FC_SOURCE_MINCORE 0x100
+#define FC_SOURCE_PREADV2 0x101
 // windows
-#define FC_SOURCE_QUERY_WORKING_SET 0x01
+#define FC_SOURCE_QUERY_WORKING_SET 0x200
 
 // usage advices 
 // directly compatible with linux madvise and posix_fadvise

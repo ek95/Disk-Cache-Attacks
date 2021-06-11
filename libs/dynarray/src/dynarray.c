@@ -11,6 +11,7 @@ void *dynArrayInit(DynArray *array, size_t elem_size, size_t init_cap)
     array->size_ = 0;
     array->elem_size_ = elem_size;
     
+    // fast path
     if(init_cap == 0)
     {
         return NULL;
