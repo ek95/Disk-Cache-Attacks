@@ -27,6 +27,7 @@ typedef void (*ListDataCallbackFn)(void *data);
 void listInit(List *list, size_t elem_size);
 ListNode *listGetIndex(List *list, size_t index);
 void listForEach(List *list, ListDataCallbackArgFn callback, void *arg);
+void listForEachSimple(List *list, ListDataCallbackFn callback);
 ListNode *listSearchFirst(List *list, void *data, ListCmpFn cmp);
 ListNode *listSearchLast(List *list, void *value, ListCmpFn cmp);
 ListNode *listAppendNodeFront(List *list, ListNode *node);

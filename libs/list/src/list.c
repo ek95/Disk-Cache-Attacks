@@ -39,6 +39,17 @@ void listForEach(List *list, ListDataCallbackArgFn callback, void *arg)
     }
 }
 
+void listForEachSimple(List *list, ListDataCallbackFn callback)
+{
+    ListNode *node = list->head_;
+
+    while(node != NULL)
+    {
+        callback(node->data_);
+
+        node = node->next_;
+    }
+}
 
 ListNode *listSearchFirst(List *list, void *data, ListCmpFn cmp)
 {

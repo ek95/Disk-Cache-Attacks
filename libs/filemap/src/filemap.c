@@ -110,7 +110,8 @@ int mapFile(FileMapping *file_mapping, const char *file_path, int file_flags, in
   struct stat file_stat;
 
   // do nothing if already mapped
-  if (file_mapping->addr_ != NULL) {
+  if (file_mapping->addr_ != NULL) 
+  {
       return 0;
   }
 
@@ -126,6 +127,13 @@ int mapFile(FileMapping *file_mapping, const char *file_path, int file_flags, in
 
   if (fstat(file_mapping->internal_.fd_, &file_stat) != 0)
   {
+    goto error;
+  }
+
+  // empty files are not supported
+  if(file_stat.st_size == 0) 
+  {
+    errno = EINVAL;
     goto error;
   }
 
@@ -176,7 +184,7 @@ static void closeMappingOnlyIntern(FileMapping *file_mapping)
   }
 }
 
-static void closeFileMappingIntern(FileMapping *file_mapping)
+static void closeFileOnlyIntern(FileMapping *file_mapping)
 {
   if (file_mapping->internal_.fd_ >= 0)
   {
@@ -480,6 +488,13 @@ int mapFile(FileMapping *file_mapping, const char *file_path, int file_flags, in
   // get file size
   if (!GetFileSizeEx(file_mapping->internal_.file_handle_, &file_size))
   {
+    SetLastError();
+    goto error;
+  }
+
+  // empty files are not supported
+  if(file_size.QuadPart == 0) 
+  {
     goto error;
   }
 
@@ -550,7 +565,7 @@ static void closeMappingOnlyIntern(FileMapping *file_mapping)
   }
 }
 
-static void closeFileMappingIntern(FileMapping *file_mapping)
+static void closeFileOnlyIntern(FileMapping *file_mapping)
 {
   if (file_mapping->internal_.file_handle_ != INVALID_HANDLE_VALUE)
   {
@@ -789,6 +804,19 @@ int getCacheStatusPageFile(FileMapping *file_mapping, size_t offset, uint8_t *st
   return FC_STATE_FN(file_mapping, offset, PAGE_SIZE, status);
 }
 
+void freeFileCacheStatus(FileMapping *file_mapping) 
+{
+    free(file_mapping->pages_cache_status_);
+    file_mapping->pages_cache_status_ = NULL;
+}
+
+void closeFileOnly(void *arg)
+{
+  FileMapping *file_mapping = arg;
+
+  closeFileOnlyIntern(file_mapping);
+}
+
 void closeMappingOnly(void *arg)
 {
   FileMapping *file_mapping = arg;
@@ -802,5 +830,5 @@ void closeMappingOnly(void *arg)
 void closeFileMapping(void *arg)
 {
   closeMappingOnly(arg);
-  closeFileMappingIntern(arg);
+  closeFileOnly(arg);
 }

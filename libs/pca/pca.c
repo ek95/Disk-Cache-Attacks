@@ -1,4 +1,36 @@
 #include "pca.h"
+#include <stdatomic.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdint.h>
+#include <ctype.h>
+#include <errno.h>
+#include <pthread.h>
+#ifdef _linux
+#include <fcntl.h>
+#include <fts.h>
+#include <memory.h>
+#include <semaphore.h>
+#include <signal.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <sys/statvfs.h>
+#include <sys/sysinfo.h>
+#include <sys/time.h>
+#include <time.h>
+#include <unistd.h>
+#include <wait.h>
+#include <zconf.h>
+#include <assert.h>
+#include <limits.h>
+#elif defined(__WIN32)
+#include "windows.h"
+#endif
+#include "debug.h"
+
+
+static int running = 0;
+static size_t PAGE_SIZE = 0;
 
 
 /*-----------------------------------------------------------------------------
@@ -18,16 +50,7 @@ void closeCachedFile(void *arg)
 {
     CachedFile *cached_file = arg;
 
-    if (cached_file->addr_ != MAP_FAILED && cached_file->addr_ != NULL)
-    {
-        munmap(cached_file->addr_, cached_file->size_);
-        cached_file->addr_ = MAP_FAILED;
-    }
-    if (cached_file->fd_ >= 0)
-    {
-        close(cached_file->fd_);
-        cached_file->fd_ = -1;
-    }
+    closeFileMapping(&cached_file->mapping_);
     dynArrayDestroy(&cached_file->resident_page_sequences_, NULL);
 }
 
@@ -81,7 +104,7 @@ int initAttackEvictionSet(AttackEvictionSet *es)
     {
         return -1;
     }
-    if(!dynArrayInit(&es->access_threads_, sizeof(PageAccessThreadESData), ARRAY_INIT_CAP))
+    if(!dynArrayInit(&es->access_threads_, sizeof(PageAccessThreadESData), PCA_ARRAY_INIT_CAP))
     {
         return -1;
     }
@@ -104,7 +127,7 @@ void closeAttackEvictionSet(AttackEvictionSet *es)
 int initAttackWorkingSet(AttackWorkingSet *ws)
 {
     memset(ws, 0, sizeof(AttackWorkingSet));
-    if (!dynArrayInit(&ws->access_threads_, sizeof(PageAccessThreadWSData), ARRAY_INIT_CAP))
+    if (!dynArrayInit(&ws->access_threads_, sizeof(PageAccessThreadWSData), PCA_ARRAY_INIT_CAP))
     {
         return -1;
     }
@@ -130,7 +153,7 @@ void closeAttackWorkingSet(AttackWorkingSet *ws)
 int initAttackBlockingSet(AttackBlockingSet *bs)
 {
     memset(bs, 0, sizeof(AttackBlockingSet));
-    if (!dynArrayInit(&bs->fillup_processes_, sizeof(FillUpProcess), ARRAY_INIT_CAP))
+    if (!dynArrayInit(&bs->fillup_processes_, sizeof(FillUpProcess), PCA_ARRAY_INIT_CAP))
     {
         return -1;
     }
@@ -153,7 +176,7 @@ void closeAttackBlockingSet(AttackBlockingSet *bs)
 int initAttackSuppressSet(AttackSuppressSet *ss)
 {
     memset(ss, 0, sizeof(AttackSuppressSet));
-    if (!dynArrayInit(&ss->target_readahead_window_, sizeof(void *), ARRAY_INIT_CAP))
+    if (!dynArrayInit(&ss->target_readahead_window_, sizeof(void *), PCA_ARRAY_INIT_CAP))
     {
         return -1;
     }
@@ -203,6 +226,22 @@ void closePageAccessThreadWSData(void *arg)
 }
 
 
+void initTargetFile(TargetFile *target_file) 
+{
+    initFileMapping(&target_file->mapping_);
+    // can not fail, initial size is 0
+    dynArrayInit(&target_file->target_pages_, sizeof(TargetPage), 0);
+}
+
+
+void closeTargetFile(void *arg) 
+{
+    TargetFile *target_file = arg;
+    closeFileMapping(&target_file->mapping_);
+    dynArrayDestroy(&target_file->target_pages_, NULL);
+}
+
+
 int initAttack(Attack *attack)
 {
     memset(attack, 0, sizeof(Attack));
@@ -222,14 +261,17 @@ int initAttack(Attack *attack)
         return -1;
     }
 
-    initFileMapping(&attack->target_obj_);
+    if (hashMapInit(&attack->targets_, sizeof(TargetFile), 1023) != 0)
+    {
+        return -1;
+    }
 
     if (initAttackSuppressSet(&attack->suppress_set_) != 0)
     {
         return -1;
     }
 
-    if (!dynArrayInit(&attack->ss_threads_, sizeof(pthread_t), ARRAY_INIT_CAP))
+    if (!dynArrayInit(&attack->ss_threads_, sizeof(pthread_t), PCA_ARRAY_INIT_CAP))
     {
         return -1;
     }
@@ -256,7 +298,7 @@ void exitAttack(Attack *attack)
     closeAttackSuppressSet(&attack->suppress_set_);
     closeAttackWorkingSet(&attack->working_set_);
     closeAttackEvictionSet(&attack->eviction_set_);
-    closeFileMapping(&attack->target_obj_);
+    hashMapDestroy(&attack->targets_, closeTargetFile);
     closeFileMapping(&attack->event_obj_);
 }
 
@@ -264,173 +306,291 @@ void exitAttack(Attack *attack)
 /*-----------------------------------------------------------------------------
  * FUNCTIONS RELATED TO ATTACK
  */
-void pcaConfigureFromDefines(Attack *attack)
+int pcaInit(Attack *attack)
 {
-    attack->use_attack_ws_ |= DEF_USE_ATTACK_WS;
-    attack->use_attack_bs_ |= DEF_USE_ATTACK_BS;
-    attack->mlock_self_ |= DEF_MLOCK_SELF;
 
-    // only used if ES_USE_THREADS is defined
-    attack->eviction_set_.access_thread_count_ = DEF_ES_ACCESS_THREAD_COUNT;
-    attack->eviction_set_.access_threads_per_pu_ = DEF_ES_ACCESS_THREADS_PER_PU;
-
-    attack->working_set_.evaluation_ |= DEF_WS_EVALUATION;
-    attack->working_set_.eviction_ignore_evaluation_ |= DEF_WS_EVICTION_IGNORE_EVALUATION;
-    attack->working_set_.search_paths_ = DEF_WS_SEARCH_PATHS;
-    attack->working_set_.ps_add_threshold_ = DEF_WS_PS_ADD_THRESHOLD;
-    attack->working_set_.access_thread_count_ = DEF_WS_ACCESS_THREAD_COUNT;
-    attack->working_set_.access_threads_per_pu_ = DEF_WS_ACCESS_THREADS_PER_PU;
-    attack->working_set_.access_sleep_time_.tv_sec = DEF_WS_ACCESS_SLEEP_TIME_S;
-    attack->working_set_.access_sleep_time_.tv_nsec = DEF_WS_ACCESS_SLEEP_TIME_NS;
-    attack->working_set_.evaluation_sleep_time_.tv_sec = DEF_WS_EVALUATION_SLEEP_TIME_S;
-    attack->working_set_.evaluation_sleep_time_.tv_nsec = DEF_WS_EVALUATION_SLEEP_TIME_NS;
-    attack->working_set_.profile_update_all_x_evaluations_ = DEF_WS_PROFILE_UPDATE_ALL_X_EVALUATIONS;
-
-    attack->mincore_check_all_x_bytes_ = DEF_MINCORE_CHECK_ALL_X_BYTES;
-
-    attack->blocking_set_.meminfo_file_path_ = DEF_BS_MEMINFO_FILE_PATH;
-    attack->blocking_set_.def_fillup_size_ = DEF_BS_FILLUP_SIZE;
-    attack->blocking_set_.min_available_mem_ = DEF_BS_MIN_AVAILABLE_MEM;
-    attack->blocking_set_.max_available_mem_ = DEF_BS_MAX_AVAILABLE_MEM;
-    attack->blocking_set_.evaluation_sleep_time_.tv_sec = DEF_BS_EVALUATION_SLEEP_TIME_S;
-    attack->blocking_set_.evaluation_sleep_time_.tv_nsec = DEF_BS_EVALUATION_SLEEP_TIME_NS;
-
-    attack->ss_thread_count_ = DEF_SS_THREAD_COUNT;
-
-    attack->sample_wait_time_.tv_sec = 0;
-    attack->sample_wait_time_.tv_nsec = DEF_SAMPLE_WAIT_TIME_NS;
-    attack->event_wait_time_.tv_sec = 0;
-    attack->event_wait_time_.tv_nsec = DEF_EVENT_WAIT_TIME_NS;
 }
 
-#ifdef __linux
 
-int profileAttackWorkingSet(AttackWorkingSet *ws, char *target_obj_path, char *eviction_file_path)
+TargetFile *pcaAddTargetFile(Attack *attack, char *target_file_path)
 {
-    FTS *fts_handle = NULL;
-    FTSENT *current_ftsent = NULL;
-    // init so that closing works, but without reserving
-    CachedFile current_cached_file;
-    size_t checked_files = 0;
-    size_t memory_checked = 0;
-    size_t mem_in_ws = 0;
-    int ret = 0;
+    char target_file_path_abs[OSAL_MAX_PATH_LEN];
+    TargetFile target_file;
+    TargetFile *target_file_ptr = NULL;
 
-    // can not fail
-    initCachedFile(&current_cached_file);
-
-    // use fts to traverse over all files in the searchpath
-    fts_handle = fts_open(ws->search_paths_, FTS_PHYSICAL, NULL);
-    if (fts_handle == NULL)
+    // get absolute path
+    if(osal_fullpath(target_file_path, target_file_path_abs) == NULL)
     {
-        printf(FAIL "Error (%s) at fts_open...\n", strerror(errno));
+        return NULL;
+    }
+
+    // map target file and add to targets hash map
+    initTargetFile(&target_file);
+    if(mapFile(&target_file.mapping_, target_file_path, FILE_ACCESS_READ | FILE_NOATIME, 
+        MAPPING_SHARED | MAPPING_ACCESS_READ) != 0)
+    {
+        closeTargetFile(&target_file);
+        return NULL;
+    }
+    hashMapInsert(&attack->targets_, target_file_path_abs, strlen(target_file_path_abs), 
+        &target_file);
+    if(target_file_ptr == NULL)
+    {
+        closeTargetFile(&target_file);
+        return NULL;
+    }
+
+    return target_file_ptr;
+}
+
+
+int pcaAddTargetsFromFile(Attack *attack, char *targets_config_file_path)
+{
+    int ret = 0;
+    FILE *targets_config_file = NULL;
+    char *line_buffer[PCA_TARGETS_CONFIG_MAX_LINE_LENGTH] = {0};
+    size_t line_length = 0;
+    int parse_pages = 0;
+    char current_target_path_abs[OSAL_MAX_PATH_LEN];
+    TargetFile current_target_file;
+    
+    // open targets config file
+    targets_config_file = fopen(targets_config_file_path, "r");
+    if(targets_config_file == NULL) 
+    {
         return -1;
     }
 
-    while (running)
+    // init current target file
+    initTargetFile(&current_target_file);
+    while(1) 
     {
-        current_ftsent = fts_read(fts_handle);
-        // error at traversing files
-        if (current_ftsent == NULL && errno)
+        // read one line
+        if(fgets(line_buffer, PCA_TARGETS_CONFIG_MAX_LINE_LENGTH, targets_config_file) == NULL)
         {
-            // catch too many open files error (end gracefully)
-            if (errno == EMFILE)
+            if(feof(targets_config_file)) 
             {
-                printf(WARNING "Too many open files at fts_read, ignoring rest of files...\n");
                 break;
             }
+            else 
+            {
+                goto error;
+            }
+        }
 
-            DEBUG_PRINT((DEBUG "Error (%s) at fts_read...\n", strerror(errno)));
+        // check for new line character (must be in array)
+        // and remove it
+        if(line_buffer[line_length - 1] != '\n') 
+        {
             goto error;
         }
-        // end
-        else if (current_ftsent == NULL)
+        line_buffer[--line_length] = 0;
+
+        // empty line -> new file
+        if(line_length == 0) 
         {
-            break;
+            // can not be zero at this point -> syntax error
+            if(parse_pages == 0)
+            {
+                goto error;
+            }
+
+            // insert processed target file
+            if(hashMapInsert(&attack->targets_, current_target_path_abs, strlen(current_target_path_abs), 
+                &current_target_file) == NULL)
+            {
+                goto error;
+            }
+            // init new target file
+            initTargetFile(&current_target_file);
+            parse_pages = 0;
         }
 
-        // regular file
-        if (current_ftsent->fts_info == FTS_F)
+        if(parse_pages)
         {
-            DEBUG_PRINT((DEBUG "Found possible shared object: %s\n", current_ftsent->fts_path));
+            TargetPage target_page;
+            int no_eviction = 0;
 
-            // TODO do not ignore the whole target file (might be big)
-            // TODO (but rather just ignore pages other than in the readaheasd window of the target) 
-            // !strcmp(current_ftsent->fts_path, target_obj_path
-            // check if the found file matches the eviction file or the target and skip if so
-            if (!strcmp(current_ftsent->fts_path, eviction_file_path))
+            if(sscanf(line_buffer, "%lx %d", &target_page.offset_, &no_eviction) != 2) 
             {
-                DEBUG_PRINT((DEBUG "Shared object %s is the eviction file or target, skipping...\n", current_ftsent->fts_name));
-                continue;
+                goto error;
+            }
+            if(no_eviction != 0 && no_eviction != 1) 
+            {
+                goto error;
+            }
+            target_page.no_eviction_ = no_eviction;
+
+            // check for out of bounds
+            if(target_page.offset_ > current_target_file.mapping_.size_pages_) 
+            {
+                goto error;
             }
 
-            // check if file is not empty, otherwise skip
-            if (current_ftsent->fts_statp->st_size == 0)
+            // append target page to file
+            if(dynArrayAppend(&current_target_file.target_pages_, &target_page) == NULL) 
             {
-                DEBUG_PRINT((DEBUG "File %s has zero size skipping...\n", current_ftsent->fts_name));
-                continue;
+                goto error;
             }
-
-            // prepare cached file object
-            initCachedFile(&current_cached_file);
-            // open file, do not update access time (faster), skip in case of errors            
-            if (mapFile(&current_cached_file.mapping_, current_ftsent->fts_accpath, FILE_ACCESS_READ | FILE_NOATIME, MAPPING_ACCESS_READ | MAPPING_SHARED) < 0)
+        }
+        else 
+        {
+            // get absolute path
+            if(osal_fullpath(line_buffer, current_target_path_abs) == NULL)
             {
-                DEBUG_PRINT((DEBUG "Error (%s) at mapping of file: %s...\n", strerror(errno),
-                             current_ftsent->fts_accpath));
-                closeCachedFile(&current_cached_file);
-                continue;
+                goto error;
             }
-            // advise random access to avoid readahead (we dont want to change the working set)
-            adviseFileUsage(&current_cached_file.mapping_, 0, 0, FILE_USAGE_RANDOM);
-
-            // parse page sequences, skip in case of errors
-            if (profileResidentPageSequences(&current_cached_file, ws->ps_add_threshold_) < 0)
+            // map target file
+            if(mapFile(&current_target_file.mapping_, current_target_path_abs, FILE_ACCESS_READ | FILE_NOATIME, 
+                MAPPING_ACCESS_READ | MAPPING_SHARED) != 0) 
             {
-                printf(WARNING "Error at profileResidentPageSequences: %s...\n", current_ftsent->fts_accpath);
-                closeCachedFile(&current_cached_file);
-                continue;
+                goto error;
             }
-
-            // no page sequences -> close object
-            if (current_cached_file.resident_page_sequences_.size_ == 0)
-            {
-                closeCachedFile(&current_cached_file);
-            }
-            // else add current cached file to cached files
-            else
-            {
-                // skip in case of errors
-                if (!listAppendBack(&ws->resident_files_, &current_cached_file))
-                {
-                    closeCachedFile(&current_cached_file);
-                    continue;
-                }
-            }
-
-            checked_files++;
-            memory_checked += current_cached_file.size_;
-            mem_in_ws += current_cached_file.resident_memory_;
+            // parse pages next
+            parse_pages = 1;
         }
     }
-            
-    ws->mem_in_ws_ = mem_in_ws;
-    DEBUG_PRINT((DEBUG "Finished profiling loaded shared objects (%zu files checked, checked data %zu kB, used as working set %zu kB)!\n",
-                 checked_files, memory_checked / 1024, mem_in_ws / 1024));
 
     goto cleanup;
-
 error:
     ret = -1;
-    listDestroy(&ws->resident_files_, closeCachedFile);
-    closeCachedFile(&current_cached_file);
-
+    dynArrayDestroy(&attack->targets_, closeTargetFile);
 cleanup:
-    fts_close(fts_handle);
+    if(targets_config_file != NULL) 
+    {
+        fclose(targets_config_file);
+    }
+    closeTargetFile(&current_target_file);
 
     return ret;
 }
 
+
+// for single page hit tracing
+int pcaTargetPagesSampleFlushOnce(Attack *attack) 
+{
+
+}
+
+
+// for profiling
+int pcaTargetFilesSampleFlushOnce(Attack *attack)
+{
+
+}
+
+
+// for covert channel
+int pcaTargetFileSampleFlushRangeOnce(Attack *attack, TargetFile *target_file, size_t offset, size_t range)
+{
+
+}
+
+
+int profileResidentPagesFile(Attack *attack, char *file_path) 
+{
+    CachedFile current_cached_file;
+    TargetFile *target_file = NULL;
+    DEBUG_PRINT((DEBUG "Found possible shared object: %s\n", file_path));
+
+    // check if the found file matches the eviction file or the target and skip if so
+    if (strcmp(file_path, attack->eviction_set_.eviction_file_path_) == 0)
+    {
+        DEBUG_PRINT((DEBUG "Shared object %s is the eviction file, skipping...\n", file_path));
+        return -1;
+    }
+
+    // prepare cached file object
+    initCachedFile(&current_cached_file);
+    // open file, do not update access time (faster), skip in case of errors            
+    if (mapFile(&current_cached_file.mapping_, file_path, FILE_ACCESS_READ | FILE_NOATIME, MAPPING_ACCESS_READ | MAPPING_SHARED) < 0)
+    {
+        DEBUG_PRINT((DEBUG "Error (%s) at mapping of file: %s...\n", strerror(errno), file_path));
+        goto error;
+    }
+    // advise random access to avoid readahead (we dont want to change the working set)
+    adviseFileUsage(&current_cached_file.mapping_, 0, 0, FILE_USAGE_RANDOM);
+
+    // get status of the file pages
+    if (getCacheStatusFile(&current_cached_file.mapping_) != 0)
+    {
+        DEBUG_PRINT((DEBUG "Error (%s) at getCacheStatusFile...\n", strerror(errno)));
+        goto error;
+    }
+
+    // if file is a target file, zero pages inside the target pages readahead window
+    target_file = hashMapGet(&attack->targets_, file_path, strlen(file_path));
+    if (target_file != NULL) 
+    {
+        targetFileTrimReadahead(target_file, &current_cached_file.mapping_, attack->ra_window_size_pages_);
+    }
+
+    // parse page sequences, skip in case of errors
+    if (profileResidentPageSequences(&current_cached_file, attack->working_set_.ps_add_threshold_) < 0)
+    {
+        DEBUG_PRINT((DEBUG "Error at profileResidentPageSequences: %s...\n", file_path));
+        goto error;
+    }
+
+    // no page sequences -> close object
+    if (current_cached_file.resident_page_sequences_.size_ == 0)
+    {
+        closeCachedFile(&current_cached_file);
+    }
+    // else add current cached file to cached files
+    else
+    {
+        // skip in case of errors
+        if (!listAppendBack(&attack->working_set_.resident_files_, &current_cached_file))
+        {
+            goto error;
+        }
+    }
+
+    // statistics
+    attack->working_set_.checked_files_++;
+    attack->working_set_.memory_checked_ += current_cached_file.mapping_.size_;
+    attack->working_set_.mem_in_ws_ += current_cached_file.resident_memory_;
+
+    // cleanup
+#ifdef WS_MAP_FILE
+    closeFileOnly(&current_cached_file.mapping_);
+#else
+    closeMappingOnly(&current_cached_file.mapping_);
+#endif
+    freeFileCacheStatus(&current_cached_file.mapping_);
+    return 0;
+
+error:
+    closeCachedFile(&current_cached_file);
+    return -1;
+}
+
+void targetFileTrimReadahead(TargetFile *target_file, FileMapping *target_file_mapping, size_t ra_window_size_pages) 
+{
+    size_t back_ra_trigger_window = ra_window_size_pages / 2 - 1;
+    size_t front_ra_trigger_window = ra_window_size_pages / 2;
+
+    for(size_t t = 0; t < target_file->target_pages_.size_; t++)
+    {
+        TargetPage *target_page = dynArrayGet(&target_file->target_pages_, t);
+        if(target_page->offset_ < ra_window_size_pages) 
+        {
+            // trim pages in back that could trigger readahead
+            for(ssize_t p = target_page->offset_; p >= 0; p--)
+                target_file_mapping->pages_cache_status_[p] = 0;
+        }
+        else 
+        {
+            // trim pages in back that could trigger readahead
+            for(ssize_t p = target_page->offset_; p >= target_page->offset_ - back_ra_trigger_window; p--)
+                target_file_mapping->pages_cache_status_[p] = 0;
+        }
+        // trim pages in front that could trigger readahead
+        for(ssize_t p = target_page->offset_; p <= MAX(target_page->offset_ + front_ra_trigger_window, target_file_mapping->size_pages_ - 1); p++)
+            target_file_mapping->pages_cache_status_[p] = 0;
+    }
+}
 
 int profileResidentPageSequences(CachedFile *current_cached_file, size_t ps_add_threshold)
 {
@@ -443,37 +603,10 @@ int profileResidentPageSequences(CachedFile *current_cached_file, size_t ps_add_
     // reset resident memory
     current_cached_file->resident_memory_ = 0;
 
-    // mmap file if not already mapped
-    if (current_cached_file->addr_ == MAP_FAILED)
-    {
-        current_cached_file->addr_ =
-            mmap(NULL, current_cached_file->size_, PROT_READ | PROT_EXEC, MAP_PRIVATE, current_cached_file->fd_, 0);
-        if (current_cached_file->addr_ == MAP_FAILED)
-        {
-            DEBUG_PRINT((DEBUG "Error (%s) at mmap...\n", strerror(errno)));
-            goto error;
-        }
-    }
-    // advise random access to avoid readahead (we dont want to change the working set)
-    madvise(current_cached_file->addr_, current_cached_file->size_, MADV_RANDOM);
-
-    // get status of the file pages
-    page_status = malloc(current_cached_file->size_pages_);
-    if (page_status == NULL)
-    {
-        DEBUG_PRINT((DEBUG "Error (%s) at malloc...\n", strerror(errno)));
-        goto error;
-    }
-    if (mincore(current_cached_file->addr_, current_cached_file->size_, page_status) != 0)
-    {
-        DEBUG_PRINT((DEBUG "Error (%s) at mincore...\n", strerror(errno)));
-        goto error;
-    }
-
     // check for sequences and add them
-    for (size_t p = 0; p < current_cached_file->size_pages_; p++)
+    for (size_t p = 0; p < current_cached_file->mapping_.size_pages_; p++)
     {
-        if (page_status[p] & 1)
+        if (current_cached_file->mapping_.pages_cache_status_[p] & 1)
         {
             if (sequence.length_ == 0)
             {
@@ -517,34 +650,131 @@ int profileResidentPageSequences(CachedFile *current_cached_file, size_t ps_add_
                      sequence.offset_, sequence.length_));
     }
 
-    goto cleanup;
+    return ret;
 
 error:
 
     ret = -1;
     dynArrayDestroy(&current_cached_file->resident_page_sequences_, NULL);
     current_cached_file->resident_memory_ = 0;
-
-cleanup:
-
-#ifdef WS_MAP_FILE
-    if (current_cached_file->fd_ > 0)
-    {
-        close(current_cached_file->fd_);
-        current_cached_file->fd_ = -1;
-    }
-#else
-    if (current_cached_file->addr_ != MAP_FAILED)
-    {
-        munmap(current_cached_file->addr_, current_cached_file->size_);
-        current_cached_file->addr_ = MAP_FAILED;
-    }
-#endif
-
-    free(page_status);
-    return ret;
 }
 
+
+#ifdef __linux
+int profileAttackWorkingSet(Attack *attack)
+{
+    FTS *fts_handle = NULL;
+    FTSENT *current_ftsent = NULL;
+    int ret = 0;
+
+    // use fts to traverse over all files in the searchpath
+    fts_handle = fts_open(attack->working_set_.search_paths_, FTS_PHYSICAL, NULL);
+    if (fts_handle == NULL)
+    {
+        DEBUG_PRINT((DEBUG "Error (%s) at fts_open...\n", strerror(errno)));
+        return -1;
+    }
+
+    while (running)
+    {
+        current_ftsent = fts_read(fts_handle);
+        // error at traversing files
+        if (current_ftsent == NULL && errno)
+        {
+            // catch too many open files error (end gracefully)
+            if (errno == EMFILE)
+            {
+                DEBUG_PRINT((DEBUG "Too many open files at fts_read, ignoring rest of files...\n"));
+                break;
+            }
+
+            DEBUG_PRINT((DEBUG "Error (%s) at fts_read...\n", strerror(errno)));
+            goto error;
+        }
+        // end
+        else if (current_ftsent == NULL)
+        {
+            break;
+        }
+
+        // regular file
+        if (current_ftsent->fts_info == FTS_F)
+        {
+            // if failed for one file ignore and just try the next one
+           profileResidentPagesFile(attack, current_ftsent->fts_path);
+        }
+    }
+            
+    goto cleanup;
+error:
+    ret = -1;
+    listDestroy(&attack->working_set_.resident_files_, closeCachedFile);
+
+cleanup:
+    fts_close(fts_handle);
+
+    return ret;
+}
+#elif defined (_WIN32)
+static int profileAttackWorkingSetFolder(Attack *attack, char *folder)
+{
+    char *full_pattern[OSAL_MAX_PATH_LEN];
+    WIN32_FIND_DATA find_file_data;
+    HANDLE handle;
+
+    // go through all files and subdirectories
+    PathCombineA(full_pattern, folder, "*");
+    handle = FindFirstFileA(full_pattern, &find_file_data);
+    if(handle == INVALID_HANDLE_VALUE)
+    {
+        if(GetLastError() == ERROR_FILE_NOT_FOUND)
+        {
+            return 0;
+        }
+
+        return -1;
+    }
+
+    do
+    {
+        PathCombineA(full_pattern, folder, find_file_data.cFileName);
+        if(find_file_data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
+        {
+            if(profileAttackWorkingSetFolder(attack, full_pattern, pattern) != 0) 
+            {
+               return -1; 
+            }
+        }
+        else 
+        {
+            profileResidentPagesFile(attack, full_pattern);                
+        }
+    } while(FindNextFile(handle, &find_file_data));
+    
+    FindClose(handle);
+    return 0;
+}
+
+int profileAttackWorkingSet(Attack *attack)
+{
+    int ret = 0;
+
+    for(size_t i < 0; attack->working_set_.search_paths_[i] != NULL && running; i++) 
+    {
+        if(profileAttackWorkingSetFolder(attack, attack->working_set_.search_paths_[i]) != 0)
+        {
+            goto error;
+        }
+    }
+    
+    return 0;
+
+error:
+    ret = -1;
+    listDestroy(&attack->working_set_.resident_files_, closeCachedFile);
+    return ret;
+}
+#endif
 
 int pageSeqCmp(void *node, void *data)
 {
@@ -555,7 +785,3 @@ int pageSeqCmp(void *node, void *data)
 
     return 0;
 }
-
-#elif defined (_WIN32)
-
-#endif

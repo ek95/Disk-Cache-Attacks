@@ -84,6 +84,8 @@ int mapFile(FileMapping *file_mapping, const char *file_path, int file_flags, in
 int adviseFileUsage(FileMapping *file_mapping, size_t offset, size_t len, int advice);
 int getCacheStatusFile(FileMapping *file_mapping);
 int getCacheStatusFilePage(FileMapping *file_mapping, size_t offset, uint8_t *status);
+void freeFileCacheStatus(FileMapping *file_mapping);
+void closeFileOnly(void *arg);
 void closeMappingOnly(void *arg);
 void closeFileMapping(void *arg);
 int createRandomFile(char *filename, size_t size);

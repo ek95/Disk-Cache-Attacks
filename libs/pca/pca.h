@@ -7,6 +7,7 @@
 #include <stdint.h>
 #include "dynarray.h"
 #include "list.h"
+#include "hashmap.h"
 #include "filemap.h"
 #include "osal.h"
 #ifdef _linux
@@ -15,8 +16,26 @@
 
 
 /*-----------------------------------------------------------------------------
+ * DEFINES
+ */
+#define PCA_ARRAY_INIT_CAP 10
+#define PCA_TARGETS_CONFIG_MAX_LINE_LENGTH 512
+
+/*-----------------------------------------------------------------------------
  * TYPE DEFINITIONS
  */
+typedef struct _TargetPage_ 
+{
+    uint64_t no_eviction_ : 1;
+    uint64_t unused_: 63;
+    size_t offset_;
+} TargetPage;
+
+typedef struct _TargetFile_ 
+{
+    FileMapping mapping_;
+    DynArray target_pages_;
+} TargetFile;
 
 typedef struct _PageSequence_
 {
@@ -39,6 +58,7 @@ typedef struct _FillUpProcess_
 
 typedef struct _AttackEvictionSet_
 {
+    char *eviction_file_path_;
     FileMapping mapping_;
     size_t initialise_samples_;
     size_t initialise_max_runs_;  
@@ -65,11 +85,13 @@ typedef struct _PageAccessThreadESData_
 
 typedef struct _AttackWorkingSet_
 {
-    int evaluation_ : 1;
-    int eviction_ignore_evaluation_ : 1;
-    int64_t unused_ : 62; // align to 8bytes
+    uint64_t evaluation_ : 1;
+    uint64_t eviction_ignore_evaluation_ : 1;
+    uint64_t unused_ : 62; // align to 8bytes
 
     char **search_paths_;
+    size_t checked_files_;
+    size_t memory_checked_;
     size_t mem_in_ws_;
     size_t tmp_mem_in_ws_;
     List resident_files_;
@@ -115,10 +137,11 @@ typedef struct _PageAccessThreadWSData_
 
 typedef struct _Attack_
 {
-    int use_attack_ws_ : 1;
-    int use_attack_bs_ : 1;
-    int mlock_self_ : 1;
-    int64_t unused_ : 61; // align to 8 byte
+    uint64_t use_attack_ws_ : 1;
+    uint64_t use_attack_bs_ : 1;
+    uint64_t mlock_self_ : 1;
+    uint64_t sampling_mode_: 1;
+    uint64_t unused_ : 60; // align to 8 byte
 
     AttackEvictionSet eviction_set_;
     AttackWorkingSet working_set_;
@@ -128,10 +151,9 @@ typedef struct _Attack_
     AttackBlockingSet blocking_set_;
     pthread_t bs_manager_thread_;
 
-    FileMapping target_obj_;
-    size_t target_page_;
-    void *target_addr_;
+    HashMap targets_;
 
+    size_t ra_window_size_pages_;
     AttackSuppressSet suppress_set_;
     size_t ss_thread_count_;
     DynArray ss_threads_;
