@@ -9,6 +9,8 @@
 
 
     #define OSAL_MAX_PATH_LEN PATH_MAX
+    #define OSAL_EC_FS "(errno: %d)" 
+    #define OSAL_EC errno
 
 
     typedef pid_t osal_pid_t;
@@ -33,7 +35,8 @@
 
 
     #define OSAL_MAX_PATH_LEN MAX_PATH
-    #define realpath(N,R) _fullpath((R),(N), MAX_PATH)
+    #define OSAL_EC_FS "(errno: %d, GetLastError: %d)" 
+    #define OSAL_EC errno, GetLastError() 
 
 
     typedef HANDLE pid_t;

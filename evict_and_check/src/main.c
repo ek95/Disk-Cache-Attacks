@@ -170,8 +170,7 @@ void usageError(char *app_name);
  */
 static int running = 1;
 static int eviction_running = 0;
-static int used_pus = 0;
-static int MAX_PUS = 0;
+
 static size_t PAGE_SIZE = 0;
 
 
@@ -224,8 +223,7 @@ int main(int argc, char *argv[])
     unsigned char target_page_status;
     size_t event_hold = 0;
     pid_t event_child = 0;
-    cpu_set_t cpu_mask;
-    pthread_attr_t thread_attr;
+
 
     // set output buffering to lines (needed for automated testing)
     setvbuf(stdout, NULL, _IOLBF, 0);
@@ -239,19 +237,6 @@ int main(int argc, char *argv[])
 
     // initialise random generator
     srand(time(NULL));
-
-    // get number of cpus
-    MAX_PUS = get_nprocs();
-    printf(INFO "%d PUs available...\n", MAX_PUS);
-
-    //  limit execution on CPU 0 by default
-    CPU_ZERO(&cpu_mask);
-    CPU_SET(0, &cpu_mask);
-    sched_setaffinity(0, sizeof(cpu_mask), &cpu_mask);
-    used_pus = (used_pus + PU_INCREASE < MAX_PUS) ? used_pus + PU_INCREASE : used_pus;
-
-    // later used to set thread affinity
-    pthread_attr_init(&thread_attr);
 
     // register signal handler for quiting the program by SRTG+C
     quit_act.sa_handler = quitHandler;

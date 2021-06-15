@@ -24,6 +24,8 @@
 #define MAPPING_ACCESS_EXECUTE 0x04
 #define MAPPING_PRIVATE 0x08
 #define MAPPING_SHARED 0x10
+// only linux
+#define MAPPING_NORESERVE (0x01 << 8)
 // only windows
 #define MAPPING_LARGE_PAGES (0x01 << 16)
 
@@ -80,7 +82,8 @@ typedef int (*FcStateFn)(FileMapping *file_mapping, size_t offset, size_t len, u
 
 
 void initFileMapping(FileMapping *file_mapping);
-int mapFile(FileMapping *file_mapping, const char *file_path, int file_flags, int mapping_flag);
+int mapFile(FileMapping *file_mapping, const char *file_path, int file_flags, int mapping_flags);
+int mapAnon(FileMapping *file_mapping, size_t size, int mapping_flags);
 int adviseFileUsage(FileMapping *file_mapping, size_t offset, size_t len, int advice);
 int getCacheStatusFile(FileMapping *file_mapping);
 int getCacheStatusFilePage(FileMapping *file_mapping, size_t offset, uint8_t *status);
