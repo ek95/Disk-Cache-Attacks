@@ -85,6 +85,7 @@ void initFileMapping(FileMapping *file_mapping);
 int mapFile(FileMapping *file_mapping, const char *file_path, int file_flags, int mapping_flags);
 int mapAnon(FileMapping *file_mapping, size_t size, int mapping_flags);
 int adviseFileUsage(FileMapping *file_mapping, size_t offset, size_t len, int advice);
+int getCacheStatusFileRange(FileMapping *file_mapping, size_t offset, size_t length);
 int getCacheStatusFile(FileMapping *file_mapping);
 int getCacheStatusFilePage(FileMapping *file_mapping, size_t offset, uint8_t *status);
 void freeFileCacheStatus(FileMapping *file_mapping);

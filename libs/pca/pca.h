@@ -31,17 +31,21 @@ typedef struct _TargetPage_
     size_t offset_;
 } TargetPage;
 
-typedef struct _TargetFile_ 
-{
-    FileMapping mapping_;
-    DynArray target_pages_;
-} TargetFile;
-
 typedef struct _PageSequence_
 {
     size_t offset_;
     size_t length_;
 } PageSequence;
+
+typedef struct _TargetFile_ 
+{
+    FileMapping mapping_;
+    union 
+    {
+        DynArray target_pages_;
+        PageSequence target_sequence_;
+    };
+} TargetFile;
 
 typedef struct _CachedFile_
 {
@@ -58,10 +62,17 @@ typedef struct _FillUpProcess_
 
 typedef struct _AttackEvictionSet_
 {
+    uint64_t use_anon_memory_ : 1;
+    uint64_t use_access_threads_: 1;
+    uint64_t use_file_api_: 1;
+    uint64_t unused_ : 61; // align to 8bytes
     char *eviction_file_path_;
     FileMapping mapping_;
     size_t initialise_samples_;
     size_t initialise_max_runs_;  
+    size_t targets_check_all_x_bytes_;
+    size_t ws_access_all_x_bytes_;
+    size_t prefetch_es_bytes_;
     // only used if ES_USE_THREADS is defined
     size_t access_thread_count_;
     size_t access_threads_per_pu_;
@@ -146,7 +157,6 @@ typedef struct _Attack_
     AttackEvictionSet eviction_set_;
     AttackWorkingSet working_set_;
     pthread_t ws_manager_thread_;
-    size_t mincore_check_all_x_bytes_;
 
     AttackBlockingSet blocking_set_;
     pthread_t bs_manager_thread_;
@@ -164,6 +174,9 @@ typedef struct _Attack_
     struct timespec sample_wait_time_;
     struct timespec event_wait_time_;
 } Attack;
+
+typedef int (*IsTargetEvictedFn)(void *arg);
+
 
 
 /*-----------------------------------------------------------------------------

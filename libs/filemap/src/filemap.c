@@ -167,7 +167,7 @@ int mapAnon(FileMapping *file_mapping, size_t size, int mapping_flags)
   file_mapping->size_ = file_mapping->size_pages_ * PAGE_SIZE;
   file_mapping->addr_ =
       mmap(NULL, file_mapping->size_, mappingFlags2mmapProtection(mapping_flags),
-           mappingFlags2mmapFlags(mapping_flags), -1, 0);
+           mappingFlags2mmapFlags(mapping_flags) | MAP_ANONYMOUS, -1, 0);
   if (file_mapping->addr_ == MAP_FAILED)
   {
     file_mapping->addr_ = NULL;
@@ -557,7 +557,8 @@ int mapAnon(FileMapping *file_mapping, size_t size, int mapping_flags)
   file_mapping->size_ = file_mapping->size_pages_ * PAGE_SIZE;
   // map anon memory
   file_mapping->internal_.mapping_handle_ = CreateFileMappingA(INVALID_HANDLE_VALUE, NULL,
-                                                             mappingFlags2createFileMappingProtection(mapping_flags), 0, 0, NULL);
+    mappingFlags2createFileMappingProtection(mapping_flags), HIDWORD(file_mapping->size_), 
+    LODWORD(file_mapping->size_), NULL);
   if (file_mapping->internal_.mapping_handle_ == NULL)
   {
     goto error;
@@ -577,6 +578,8 @@ error:
 
 static int adviseFileUsageIntern(FileMapping *file_mapping, size_t offset, size_t len, int advice)
 {
+  int ret = 0;
+
   // no mapping
   if (file_mapping->addr_ == NULL)
   {
@@ -586,11 +589,16 @@ static int adviseFileUsageIntern(FileMapping *file_mapping, size_t offset, size_
   // only dontneed and willneed are supported on windows
   if (advice == USAGE_DONTNEED)
   {
-    DiscardVirtualMemory
-    // double unlock always removes pages from working set
-    // see https://docs.microsoft.com/en-us/windows/win32/api/memoryapi/nf-memoryapi-virtualunlock
-    VirtualUnlock((uint8_t *)(file_mapping->addr_) + offset, len);
-    VirtualUnlock((uint8_t *)(file_mapping->addr_) + offset, len);
+    // try DiscardVirtualMemory and also double VirtualUnlock
+    // only works for read-write mappings, discards memory from RAM
+    ret = DiscardVirtualMemory((uint8_t *)(file_mapping->addr_) + offset, len);
+    if(ret != ERROR_SUCCESS)
+    {
+        // double unlock always removes pages from working set
+        // see https://docs.microsoft.com/en-us/windows/win32/api/memoryapi/nf-memoryapi-virtualunlock
+        VirtualUnlock((uint8_t *)(file_mapping->addr_) + offset, len);
+        VirtualUnlock((uint8_t *)(file_mapping->addr_) + offset, len);
+    }
     return 0;
   }
   else if (advice == USAGE_WILLNEED)
@@ -771,10 +779,10 @@ void initFileMapping(FileMapping *file_mapping)
   initFileMappingInternal(&file_mapping->internal_);
 }
 
-static int doFcStateAccess(FileMapping *file_mapping, size_t offset, size_t length, unsigned char *vec)
+static int doFcStateAccess(FileMapping *file_mapping, size_t offset, size_t len, unsigned char *vec)
 {
   uint8_t *current_addr = (uint8_t *)file_mapping->addr_ + offset;
-  uint8_t *end_addr = current_addr + length;
+  uint8_t *end_addr = current_addr + len;
   volatile uint8_t tmp = 0;
   (void)tmp;
   uint64_t start_cycle = 0, end_cycle = 0;
@@ -823,24 +831,45 @@ int adviseFileUsage(FileMapping *file_mapping, size_t offset, size_t len, int ad
     len = file_mapping->size_;
   }
 
-  // round offset down to full pages
-  offset = (offset / PAGE_SIZE) * PAGE_SIZE;
-  // round size up to full pages
-  len = (len + PAGE_SIZE - 1) / PAGE_SIZE * PAGE_SIZE;
-
-  // manual range check
-  size_t file_size_cache = file_mapping->size_pages_ * PAGE_SIZE;
-  if (len > file_size_cache ||
-      offset > file_size_cache - len)
-  {
+  // offset and len in pages
+  offset = (offset / PAGE_SIZE);
+  len = (len + PAGE_SIZE - 1) / PAGE_SIZE;
+  // check if out-of-bounds
+  if(offset >= file_mapping->size_pages_ || 
+     len > file_mapping->size_pages_ - offset) {
     return -1;
   }
 
-  return adviseFileUsageIntern(file_mapping, offset, len, advice);
+  return adviseFileUsageIntern(file_mapping, offset * PAGE_SIZE, len * PAGE_SIZE, advice);
+}
+
+int getCacheStatusFileRange(FileMapping *file_mapping, size_t offset, size_t len)
+{
+  // offset and len in pages
+  offset = (offset / PAGE_SIZE);
+  len = (len + PAGE_SIZE - 1) / PAGE_SIZE;
+  // check if out-of-bounds
+  if(offset >= file_mapping->size_pages_ || 
+     len > file_mapping->size_pages_ - offset) {
+    return -1;
+  }
+
+  // malloc page cache status array if not done yet
+  if (file_mapping->pages_cache_status_ == NULL)
+  {
+    file_mapping->pages_cache_status_ = malloc(sizeof(uint8_t) * file_mapping->size_pages_);
+    if (file_mapping->pages_cache_status_ == NULL)
+    {
+      return -1;
+    }
+  }
+
+  return FC_STATE_FN(file_mapping, offset * PAGE_SIZE, len * PAGE_SIZE, file_mapping->pages_cache_status_);
 }
 
 int getCacheStatusFile(FileMapping *file_mapping)
 {
+  // malloc page cache status array if not done yet
   if (file_mapping->pages_cache_status_ == NULL)
   {
     file_mapping->pages_cache_status_ = malloc(sizeof(uint8_t) * file_mapping->size_pages_);
@@ -853,8 +882,15 @@ int getCacheStatusFile(FileMapping *file_mapping)
   return FC_STATE_FN(file_mapping, 0, file_mapping->size_pages_ * PAGE_SIZE, file_mapping->pages_cache_status_);
 }
 
-int getCacheStatusPageFile(FileMapping *file_mapping, size_t offset, uint8_t *status)
+int getCacheStatusFilePage(FileMapping *file_mapping, size_t offset, uint8_t *status)
 {
+  // offset in pages
+  offset = (offset / PAGE_SIZE);
+  // check if out-of-bounds
+  if(offset >= file_mapping->size_pages_)
+  {
+      return -1;
+  }
   return FC_STATE_FN(file_mapping, offset, PAGE_SIZE, status);
 }
 
