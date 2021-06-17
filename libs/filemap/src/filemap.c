@@ -864,7 +864,7 @@ int getCacheStatusFileRange(FileMapping *file_mapping, size_t offset, size_t len
     }
   }
 
-  return FC_STATE_FN(file_mapping, offset * PAGE_SIZE, len * PAGE_SIZE, file_mapping->pages_cache_status_);
+  return FC_STATE_FN(file_mapping, offset * PAGE_SIZE, len * PAGE_SIZE, file_mapping->pages_cache_status_ + offset);
 }
 
 int getCacheStatusFile(FileMapping *file_mapping)

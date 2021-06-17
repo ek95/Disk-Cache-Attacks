@@ -27,28 +27,42 @@ ListNode *listGetIndex(List *list, size_t index)
 }
 
 
-void listForEach(List *list, ListDataCallbackArgFn callback, void *arg)
+int listForEach(List *list, ListDataCallbackArgFn callback, void *arg)
 {
+    int ret = 0;
     ListNode *node = list->head_;
 
     while(node != NULL)
     {
-        callback(node->data_, arg);
+        ret = callback(node->data_, arg);
+        if(ret == LIST_FE_BREAK) 
+        {
+            return ret;
+        }
 
         node = node->next_;
     }
+
+    return LIST_FE_OK;
 }
 
-void listForEachSimple(List *list, ListDataCallbackFn callback)
+int listForEachSimple(List *list, ListDataCallbackFn callback)
 {
+    int ret = 0;
     ListNode *node = list->head_;
 
     while(node != NULL)
     {
-        callback(node->data_);
+        ret = callback(node->data_);
+        if(ret == LIST_FE_BREAK) 
+        {
+            return ret;
+        }
 
         node = node->next_;
     }
+
+    return LIST_FE_OK;
 }
 
 ListNode *listSearchFirst(List *list, void *data, ListCmpFn cmp)

@@ -5,12 +5,17 @@
 #include "list.h"
 
 
-typedef ListDataCallbackFn HashMapCallbackFn;
-typedef ListDataCallbackArgFn HashMapCallbackArgFn ;
+#define HM_FE_OK LIST_FE_OK
+#define HM_FE_BREAK LIST_FE_BREAK
+
+
+typedef ListDataCallbackFn HashMapDataCallbackFn;
+typedef ListDataCallbackArgFn HashMapDataCallbackArgFn;
+
 
 struct _ForEachArg_ 
 {
-    HashMapCallbackArgFn callback_;
+    HashMapDataCallbackArgFn callback_;
     void *arg_;
 };
 
@@ -32,7 +37,7 @@ typedef struct _HashMap_
 int hashMapInit(HashMap *map, size_t elem_size, size_t buckets);
 void *hashMapGet(HashMap *map, void *key, size_t key_size);
 void *hashMapInsert(HashMap *map, void *key, size_t key_size, void *data);
-void hashMapForEach(HashMap *map, HashMapCallbackArgFn callback, void *arg);
-void hashMapDestroy(HashMap *map, HashMapCallbackFn free_data);
+int hashMapForEach(HashMap *map, HashMapDataCallbackArgFn callback, void *arg);
+void hashMapDestroy(HashMap *map, HashMapDataCallbackFn free_data);
 
 #endif

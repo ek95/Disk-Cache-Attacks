@@ -79,7 +79,7 @@ int listCmpLessEqual(void* data, void* cmp_data)
     return 0;
 }
 
-void listForEachCB(void *data, void *arg)
+int listForEachCB(void *data, void *arg)
 {
     static size_t i = 0;
 
@@ -89,9 +89,11 @@ void listForEachCB(void *data, void *arg)
     }
 
     i++;
+
+    return 0;
 }
 
-void listFreeDataCBTestNumbers3(void *data)
+int listFreeDataCBTestNumbers3(void *data)
 {
     static size_t i = 0;
 
@@ -101,6 +103,8 @@ void listFreeDataCBTestNumbers3(void *data)
     }
 
     i++;
+
+    return 0;
 }
 
 

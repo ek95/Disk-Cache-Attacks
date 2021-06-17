@@ -84,11 +84,9 @@ typedef struct _AttackEvictionSet_
 typedef struct _PageAccessThreadESData_
 {
     pthread_t tid_;
-    FileMapping *eviction_mapping_;
+    Attack *attack_;
     size_t page_offset_;
     size_t size_pages_;
-    void *target_addr_;
-    size_t mincore_check_all_x_bytes_;
     sem_t *start_sem_;
     sem_t *join_sem_;
     size_t accessed_mem_;
@@ -175,7 +173,7 @@ typedef struct _Attack_
     struct timespec event_wait_time_;
 } Attack;
 
-typedef int (*IsTargetEvictedFn)(void *arg);
+typedef int (*TargetsEvictedFn)(void *arg);
 
 
 

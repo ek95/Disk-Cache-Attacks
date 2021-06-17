@@ -15,12 +15,19 @@ static size_t TEST_DATA[] = { 1, 2, 3, 31, 32 };
 static size_t sum = 0;
 
 
-void sumEntries(void *data, void *arg) 
+int sumEntries(void *data, void *arg) 
 {
-    (void) arg;
+    size_t *limit = arg;
     size_t *num = data;
 
     sum += *num;
+
+    if(limit != NULL && sum >= *limit)
+    {
+        return HM_FE_BREAK;
+    } 
+
+    return HM_FE_OK;
 }
 
 
@@ -78,14 +85,18 @@ int main(int argc, char *argv[])
 
 
     // third test
-    // tests for each
+    // tests "for-each" loop
     TEST_START(3);
+    sum = 0;
     size_t sum_should = new_val;
     for(size_t i = 1; TEST_KEYS[i] != NULL; i++) 
     {
         sum_should += TEST_DATA[i];
     }
-    hashMapForEach(&hash_map, sumEntries , NULL);
+    if(hashMapForEach(&hash_map, sumEntries , NULL) != HM_FE_OK) 
+    {
+        return -1;
+    }
     if(sum != sum_should) 
     {
         return -1;
@@ -94,8 +105,24 @@ int main(int argc, char *argv[])
 
 
     // fourth test
-    // corners + destroy
+    // tests early stopping "for-each" loop
     TEST_START(4);
+    sum = 0;
+    size_t limit = new_val;
+    if(hashMapForEach(&hash_map, sumEntries, &limit) != HM_FE_BREAK) 
+    {
+        return -1;
+    }
+    if(sum != limit) 
+    {
+        return -1;
+    }
+    TEST_END(4);    
+
+
+    // fith test
+    // corners + destroy
+    TEST_START(5);
     // trying to get a non-existing element
     char *non_existing_key = "blabalabl";
     val_ptr = hashMapGet(&hash_map, non_existing_key, strlen(non_existing_key));
@@ -104,7 +131,7 @@ int main(int argc, char *argv[])
         return -1;
     }
     hashMapDestroy(&hash_map, NULL);
-    TEST_END(4);
+    TEST_END(5);
     
     return 0;
 }

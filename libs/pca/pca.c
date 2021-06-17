@@ -30,6 +30,24 @@
 
 
 /*-----------------------------------------------------------------------------
+ * DEFINES
+ */
+// output TAGS with ANSI colors
+#define PENDING "\x1b[34;1m[PENDING]\x1b[0m "
+#define INFO "\x1b[34;1m[INFO]\x1b[0m "
+#define EVENT "\x1b[33;1m[EVENT]\x1b[0m "
+#define OK "\x1b[32;1m[OK]\x1b[0m "
+#define FAIL "\x1b[31;1m[FAIL]\x1b[0m "
+#define USAGE "\x1b[31;1m[USAGE]\x1b[0m "
+#define WARNING "\x1b[33;1m[WARNING]\x1b[0m "
+
+#define WS_MGR_TAG "[WS Manager] "
+#define BS_MGR_TAG "[BS Manager] "
+#define ES_THREAD_TAG "[ES Thread] "
+#define SS_THREAD_TAG "[SS Thread] "
+
+
+/*-----------------------------------------------------------------------------
  * GLOBAL VARIABLES
  */
 static size_t PAGE_SIZE = 0;
@@ -37,6 +55,7 @@ static size_t TOTAL_RAM_BYTES = 0;
 static int MAX_PUS = 0;
 
 static int running = 0;
+static int eviction_running = 0;
 static int used_pus = 0;
 
 
@@ -359,18 +378,6 @@ error:
 int pcaStart(Attack *attack, int flags)
 {
     int ret = 0;
-    cpu_set_t cpu_mask;
-    pthread_attr_t thread_attr;
-
-    // later used to set thread affinity
-    pthread_attr_init(&thread_attr);
-
-    // limit execution on CPU 0 by default
-    CPU_ZERO(&cpu_mask);
-    CPU_SET(0, &cpu_mask);
-    sched_setaffinity(0, sizeof(cpu_mask), &cpu_mask);
-    used_pus = (used_pus + PU_INCREASE < MAX_PUS) ? used_pus + PU_INCREASE : used_pus;
-
 
     // profile system working set if wanted
     if (attack->use_attack_ws_)
@@ -440,17 +447,6 @@ int pcaStart(Attack *attack, int flags)
 
 
 
-
-
-
-
-
-    // TODO not really sure that brings any benefit
-    // next thread(s) by default on different core
-    CPU_ZERO(&cpu_mask);
-    CPU_SET(used_pus, &cpu_mask);
-    pthread_attr_setaffinity_np(&thread_attr, sizeof(cpu_set_t), &cpu_mask);
-    used_pus = (used_pus + PU_INCREASE < MAX_PUS) ? used_pus + PU_INCREASE : used_pus;
 
 
 
@@ -640,25 +636,283 @@ cleanup:
 
 
 // for single page hit tracing
-int pcaTargetPagesSampleFlushOnce(Attack *attack) 
+int targetsHmPagesCacheStatusCB(void *data, void *arg)
 {
+    int stop_if_cached = (int) arg; 
+    TargetFile *target_file = data;
+    TargetPage *target_pages = target_file->target_pages_.data_;
+    uint8_t status = 0;
 
+    for(size_t i = 0; i < target_file->target_pages_.size_; i++)
+    {
+        if(getCacheStatusFileRange(&target_file->mapping_, target_pages[i].offset_, PAGE_SIZE) != 0) 
+        {
+            DEBUG_PRINT((DEBUG "Error " OSAL_EC_FS " at getCacheStatusFilePage...\n", OSAL_EC));
+            return -1;
+        }
+        // stop if wanted
+        if(stop_if_cached &&
+           target_file->mapping_.pages_cache_status_[target_pages[i].offset_ / PAGE_SIZE] == 1)
+
+        {
+            // page is still in page cache -> stop
+            return HM_FE_BREAK;
+        }
+    }
+
+    return HM_FE_OK;
 }
 
 
+int targetPagesEvicted(void *arg)
+{
+    Attack *attack = arg;
+    if(hashMapForEach(&attack->targets_, targetsHmPagesCacheStatusCB, 1) == HM_FE_OK)
+    {
+        return 1;
+    }
+
+    return 0;
+}
+
+
+int targetsHmPagesShouldEvictCB(void *data, void *arg)
+{
+    (void) arg;
+    TargetFile *target_file = data;
+    TargetPage *target_pages = target_file->target_pages_.data_;
+
+    for(size_t i = 0; i < target_file->target_pages_.size_; i++)
+    {
+        // evict if a page is in pc for which eviction should be triggered
+        if(!target_pages[i].no_eviction_ &&
+           target_file->mapping_.pages_cache_status_[target_pages[i].offset_ / PAGE_SIZE] == 1)
+
+        {
+            return HM_FE_BREAK;
+        }
+    }
+
+    return HM_FE_OK;
+}
+
+
+int targetPagesSampleShouldEvict(Attack * attack)
+{
+    // sample all pages of interest
+    if(hashMapForEach(&attack->targets_, targetsHmPagesCacheStatusCB, 0) != HM_FE_OK)
+    {
+        return -1;
+    }
+    // check if eviction is needed
+    if(hashMapForEach(&attack->targets_, targetsHmPagesShouldEvictCB, 0) == HM_FE_BREAK)
+    {
+        return 1;
+    }
+
+    return 0;
+}
+
+
+int pcaTargetPagesSampleFlushOnce(Attack *attack) 
+{
+    int ret = 0;
+    ret = targetPagesSampleShouldEvict(attack);
+    if(ret == -1) 
+    {
+        return -1;
+    }
+    // nothing to evict
+    else if(ret == 0)
+    {
+        return 0;
+    }
+    // we should evict
+    if(evictTargets(attack, targetPagesEvicted, attack) == attack->eviction_set_.mapping_.size_) 
+    {
+        return -1;
+    }
+
+    return 0;
+}
+
 // for profiling
+int targetsHmFilesCacheStatusCB(void *data, void *arg)
+{
+    int stop_if_cached = (int) arg; 
+    TargetFile *target_file = data;
+
+    if(getCacheStatusFile(&target_file->mapping_) != 0) 
+    {
+        DEBUG_PRINT((DEBUG "Error " OSAL_EC_FS " at getCacheStatusFile...\n", OSAL_EC));
+        return -1;
+    }
+    if(stop_if_cached && 
+        getMappingCount(target_file->mapping_.pages_cache_status_, target_file->mapping_.size_pages_) != 0)
+    {
+        // (part of) file is still in page cache -> stop
+        return HM_FE_BREAK;
+    }
+
+    return HM_FE_OK;
+}
+
+
+int targetFilesEvicted(void *arg)
+{
+    Attack *attack = arg;
+    if(hashMapForEach(&attack->targets_, targetsHmFilesCacheStatusCB, 1) == HM_FE_OK)
+    {
+        return 1;
+    }
+
+    return 0;
+}
+
+
+int targetsHmFilesShouldEvictCB(void *data, void *arg)
+{
+    int stop_if_cached = (int) arg; 
+    TargetFile *target_file = data;
+
+    if(getMappingCount(target_file->mapping_.pages_cache_status_, target_file->mapping_.size_pages_) != 0)
+    {
+        // (part of) file is still in page cache -> stop
+        return HM_FE_BREAK;
+    }
+
+    return HM_FE_OK;
+}
+
+
+int targetFilesSampleShouldEvict(Attack *attack)
+{
+    // sample all pages of interest
+    if(hashMapForEach(&attack->targets_, targetsHmFilesCacheStatusCB, 0) != HM_FE_OK)
+    {
+        return -1;
+    }  
+    // check if eviction is needed
+    if(hashMapForEach(&attack->targets_, targetsHmFilesShouldEvictCB, 0) == HM_FE_BREAK)
+    {
+        return 1;
+    } 
+
+    return 0;
+}
+
 int pcaTargetFilesSampleFlushOnce(Attack *attack)
 {
-
+    int ret = 0;
+    ret = targetFilesSampleShouldEvict(attack);
+    if(ret == -1) 
+    {
+        return -1;
+    }
+    // nothing to evict
+    else if(ret == 0)
+    {
+        return 0;
+    }
+    // we should evict
+    if(evictTargets(attack, targetFilesEvicted, attack) == attack->eviction_set_.mapping_.size_) 
+    {
+        return -1;
+    }
+    return 0;
 }
 
 
 // for covert channel
-int pcaTargetFileSampleFlushRangeOnce(Attack *attack, TargetFile *target_file)
+int targetFileRangeCacheStatus(TargetFile *target_file)
 {
+    size_t offset_in_pages = target_file->target_sequence_.offset_ / PAGE_SIZE;
+    size_t length_in_pages = target_file->target_sequence_.length_ / PAGE_SIZE;
 
+    if(getCacheStatusFileRange(&target_file->mapping_, offset_in_pages, length_in_pages) != 0) 
+    {
+        DEBUG_PRINT((DEBUG "Error " OSAL_EC_FS " at getCacheStatusFile...\n", OSAL_EC));
+        return -1;
+    }
+    if(getMappingCount(target_file->mapping_.pages_cache_status_ + offset_in_pages, length_in_pages) != 0)
+    {
+        // (part of) file is still in page cache -> return 1
+        return 1;
+    }
+
+    // nothing in page cache
+    return 0;
 }
 
+
+int targetFileRangeEvicted(void *arg)
+{
+    TargetFile *target_file = arg;
+    if(targetFileRangeCacheStatus(target_file) == 0)
+    {
+        return 1;
+    }
+
+    return 0;
+}
+
+
+int targetFileRangeShouldEvict(TargetFile *target_file)
+{
+    size_t offset_in_pages = target_file->target_sequence_.offset_ / PAGE_SIZE;
+    size_t length_in_pages = target_file->target_sequence_.length_ / PAGE_SIZE;
+
+    if(getMappingCount(target_file->mapping_.pages_cache_status_ + offset_in_pages, length_in_pages) != 0)
+    {
+        // (part of) file is still in page cache -> return 1
+        return 1;
+    }
+
+    // nothing in page cache
+    return 0;
+}
+
+
+int targetFileRangeSampleShouldEvict(TargetFile *target_file)
+{
+    // sample all pages of interest
+    if(targetFileRangeCacheStatus(target_file) < 0)
+    {
+        return -1;
+    }  
+    // check if eviction is needed
+    if(targetFileRangeShouldEvict(target_file) == 1)
+    {
+        return 1;
+    } 
+
+    return 0;
+}
+
+
+int pcaTargetFileRangeSampleFlushOnce(Attack *attack, TargetFile *target_file)
+{
+    int ret = 0;
+    ret = targetFileRangeSampleShouldEvict(target_file);
+    if(ret == -1) 
+    {
+        return -1;
+    }
+    // nothing to evict
+    else if(ret == 0)
+    {
+        return 0;
+    }
+    // we should evict
+    if(evictTargets(attack, targetFileRangeEvicted, target_file) == attack->eviction_set_.mapping_.size_) 
+    {
+        return -1;
+    }
+    return 0;
+}
+
+
+// creation of evcition set
 int createEvictionSet(Attack *attack)
 {
     int ret = 0;
@@ -698,38 +952,44 @@ error:
     return -1;
 }
 
-size_t evictTargets(Attack *attack, IsTargetEvictedFn target_evicted_fn, void *target_evicted_arg_ptr) 
+
+
+size_t evictTargets(Attack *attack, TargetsEvictedFn targets_evicted_fn, void *target_evicted_arg_ptr) 
 {
     if(!attack->eviction_set_.use_access_threads_)
     {
-        return evictTargets_(attack, target_evicted_fn, target_evicted_arg_ptr);
+        return evictTargets_(attack, targets_evicted_fn, target_evicted_arg_ptr);
 
     }
     else
     {
-        return evictTargetsThreads_(attack, target_evicted_fn, target_evicted_arg_ptr);
+        return evictTargetsThreads_(attack, targets_evicted_fn, target_evicted_arg_ptr);
     }
 }
 
-size_t evictTargets_(Attack *attack, IsTargetEvictedFn target_evicted_fn, void *target_evicted_arg_ptr)
+
+size_t evictTargets_(Attack *attack, TargetsEvictedFn targets_evicted_fn, void *target_evicted_arg_ptr)
 {
     volatile uint8_t tmp = 0;
     (void)tmp;
     ssize_t accessed_mem = 0;
 
-    // TODO fix
     // flag eviction running
     __atomic_store_n(&eviction_running, 1, __ATOMIC_RELAXED);
+    evictTargets__(attack, target_ev)
+    // flag eviction done
+    __atomic_store_n(&eviction_running, 0, __ATOMIC_RELAXED);
+
+    return accessed_mem;
+}
+
+
+size_t evictTargets__(Attack *attack, TargetsEvictedFn targets_evicted_fn, void *target_evicted_arg_ptr, size_t ) 
+{
+    size_t accessed_mem = 0;
 
     for (size_t p = 0; p < attack->eviction_set_.mapping_.size_pages_; p++)
     {
-        // check if evicted
-        if (accessed_mem % attack->eviction_set_.targets_check_all_x_bytes_ == 0 &&
-            target_evicted_fn(target_evicted_arg_ptr))
-        {
-          break;
-        }
-
         // access ws
         if (accessed_mem % attack->eviction_set_.ws_access_all_x_bytes_ == 0)
         {
@@ -765,6 +1025,13 @@ size_t evictTargets_(Attack *attack, IsTargetEvictedFn target_evicted_fn, void *
             tmp = *((uint8_t *)attack->eviction_set_.mapping_.addr_ + p * PAGE_SIZE);
         }
 
+        // check if evicted
+        if (accessed_mem % attack->eviction_set_.targets_check_all_x_bytes_ == 0 &&
+            target_evicted_fn(target_evicted_arg_ptr))
+        {
+          break;
+        }
+
         accessed_mem += PAGE_SIZE;
     }
 
@@ -775,19 +1042,10 @@ size_t evictTargets_(Attack *attack, IsTargetEvictedFn target_evicted_fn, void *
         DEBUG_PRINT((DEBUG "Warning error " OSAL_EC_FS " at adviseFileUsage...\n", OSAL_EC));
     }
 
-    // flag eviction done
-    __atomic_store_n(&eviction_running, 0, __ATOMIC_RELAXED);
-
-#ifdef _DETAILED_EVICTION_SET_STAT_
-    printf(INFO "[Eviction Set] Resident pages: %zu kB, access time: %zu us\n", already_resident * PAGE_SIZE / 1024, t_resident / 1000);
-    printf(INFO "[Eviction Set] Non resident pages: %zu kB, access time: %zu us\n", (accessed_mem - already_resident * PAGE_SIZE) / 1024, t_non_resident / 1000);
-#endif
-
-    return accessed_mem;
 }
 
 
-size_t evictTargetPage(Attack *attack)
+size_t evictTargetsThreads_(Attack *attack, TargetsEvictedFn target_evicted_fn, void *target_evicted_arg_ptr)
 {
     size_t accessed_mem_sum = 0;
 
@@ -800,7 +1058,7 @@ size_t evictTargetPage(Attack *attack)
         // in case of error skip
         if (sem_post(&attack->eviction_set_.worker_start_sem_) != 0)
         {
-            printf(WARNING "Error (%s) at sem_post...\n", strerror(errno));
+            DEBUG_PRINT((DEBUG WARNING "Error (%s) at sem_post...\n", strerror(errno));
             continue;
         }
     }
@@ -811,7 +1069,7 @@ size_t evictTargetPage(Attack *attack)
         // in case of error skip
         if (sem_wait(&attack->eviction_set_.worker_join_sem_) != 0)
         {
-            printf(WARNING "Error (%s) at sem_wait...\n", strerror(errno));
+            DEBUG_PRINT((DEBUG WARNING "Error (%s) at sem_wait...\n", strerror(errno));
             continue;
         }
 
@@ -825,11 +1083,110 @@ size_t evictTargetPage(Attack *attack)
     return accessed_mem_sum;
 }
 
-#else
 
 
-#endif
+int spawnESThreads(Attack *attack)
+{
+    int ret = 0;
+    size_t processed_pages = 0;
+    size_t pages_per_thread_floor = attack->eviction_set_.mapping_.size_pages_ / attack->eviction_set_.access_thread_count_;
 
+    //  reserve space for access thread data structures
+    if (dynArrayResize(&attack->eviction_set_.access_threads_, attack->eviction_set_.access_thread_count_) == NULL)
+    {
+        printf(FAIL "Could not reserve memory...\n");
+        goto error;
+    }
+
+    // prepare thread_data objects
+    for (size_t t = 0; t < attack->eviction_set_.access_thread_count_ - 1; t++)
+    {
+        PageAccessThreadESData *thread_data = dynArrayGet(&attack->eviction_set_.access_threads_, t);
+        initPageAccessThreadESData(thread_data);
+        thread_data->attack = attack;
+        thread_data->page_offset_ = processed_pages;
+        thread_data->size_pages_ = pages_per_thread_floor;
+        thread_data->target_addr_ = target_addr;
+        thread_data->start_sem_ = &attack->eviction_set_.worker_start_sem_;
+        thread_data->join_sem_ = &attack->eviction_set_.worker_join_sem_;
+        processed_pages += pages_per_thread_floor;
+    }
+    // prepare thread_data object for last thread
+    PageAccessThreadESData *thread_data = dynArrayGet(&attack->eviction_set_.access_threads_, attack->eviction_set_.->access_thread_count_ - 1);
+    initPageAccessThreadESData(thread_data);
+    thread_data->attack = attack;
+    thread_data->page_offset_ = processed_pages;
+    thread_data->size_pages_ = pages_per_thread_floor;
+    thread_data->target_addr_ = target_addr;
+    thread_data->start_sem_ = &attack->eviction_set_.worker_start_sem_;
+    thread_data->join_sem_ = &attack->eviction_set_.worker_join_sem_;
+
+    // spin up worker threads
+    for (size_t t = 0; t < attack->eviction_set_.->access_thread_count_; t++)
+    {
+        PageAccessThreadESData *thread_data = dynArrayGet(&attack->eviction_set_.->access_threads_, t);
+        if (pthread_create(&thread_data->tid_, NULL, pageAccessThreadES, thread_data) != 0)
+        {
+            printf(FAIL "Error (%s) at creating ES access thread...\n", strerror(errno));
+            goto error;
+        }
+
+        // increase to next core if wanted
+        if ((t + 1) % attack->eviction_set_.->access_threads_per_pu_ == 0)
+        {
+            // NOTE has to be locked when accessed concourrently in future
+            used_pus = (used_pus + PU_INCREASE < MAX_PUS) ? used_pus + PU_INCREASE : used_pus;
+        }
+    }
+
+    goto cleanup;
+
+error:
+    ret = -1;
+    dynArrayDestroy(&attack->eviction_set_.->access_threads_, closePageAccessThreadESData);
+
+cleanup:
+    pthread_attr_destroy(&thread_attr);
+
+    return ret;
+}
+
+
+void *pageAccessThreadES(void *arg)
+{
+    PageAccessThreadESData *page_thread_data = arg;
+    size_t accessed_mem = 0;
+    volatile uint8_t tmp = 0;
+    (void)tmp;
+
+    DEBUG_PRINT((DEBUG ES_THREAD_TAG "Worker thread (page offset: %zu, max. page count: %zu) running on core %d.\n",
+           page_thread_data->page_offset_, page_thread_data->size_pages_, sched_getcpu()));
+    while (__atomic_load_n(&running, __ATOMIC_RELAXED))
+    {
+        if (sem_wait(page_thread_data->start_sem_) != 0)
+        {
+            DEBUG_PRINT((DEBUG ES_THREAD_TAG "Error (%s) at sem_wait (%p)...\n", strerror(errno), (void *)page_thread_data->start_sem_));
+            goto error;
+        }
+
+
+
+        DEBUG_PRINT((DEBUG ES_THREAD_TAG "Worker thread (page offset: %zu, max. page count: %zu) accessed %zu kB.\n",
+                     page_thread_data->page_offset_, page_thread_data->size_pages_, accessed_mem / 1024));
+        page_thread_data->accessed_mem_ = accessed_mem;
+        if (sem_post(page_thread_data->join_sem_) != 0)
+        {
+            printf(FAIL ES_THREAD_TAG "Error (%s) at sem_post (%p)...\n", strerror(errno), (void *)page_thread_data->join_sem_);
+            goto error;
+        }
+    }
+
+    return NULL;
+
+error:
+
+    return (void *)-1;
+}
 
 
 
@@ -1136,4 +1493,14 @@ error:
 }
 #endif
 
+size_t getMappingCount(const unsigned char *status, size_t size_in_pages)
+{
+    size_t mapped = 0;
 
+    for (size_t p = 0; p < size_in_pages; p++)
+    {
+        mapped += (status[p] & 1);
+    }
+
+    return mapped;
+}

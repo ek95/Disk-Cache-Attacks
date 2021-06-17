@@ -90,11 +90,12 @@ void *hashMapGet(HashMap *map, void *key, size_t key_size)
 }
 
 
-static void freeHashMapEntry(void *arg)
+static int freeHashMapEntry(void *arg)
 {
     HashMapEntry *entry = arg;
     free(entry->key_);
     free(entry->data_);
+    return 0;
 }
 
 
@@ -150,16 +151,17 @@ void *hashMapInsert(HashMap *map, void *key, size_t key_size, void *data)
 }
 
 
-static void hashMapForEachCallback(void *data, void *arg)
+static int hashMapForEachCallback(void *data, void *arg)
 {
     struct _ForEachArg_ *for_each_arg = arg;
     HashMapEntry *entry = data;
-    for_each_arg->callback_(entry->data_, for_each_arg->arg_);
+    return for_each_arg->callback_(entry->data_, for_each_arg->arg_);
 }
 
 
-void hashMapForEach(HashMap *map, HashMapCallbackArgFn callback, void *arg) 
+int hashMapForEach(HashMap *map, HashMapDataCallbackArgFn callback, void *arg) 
 {
+    int ret = 0;
     struct _ForEachArg_ for_each_arg = 
     {
         .callback_ = callback,
@@ -169,12 +171,18 @@ void hashMapForEach(HashMap *map, HashMapCallbackArgFn callback, void *arg)
     // apply function for every element in hash list
     for(size_t b = 0; b < map->buckets_; b++) 
     {
-        listForEach(&map->map_[b], hashMapForEachCallback, &for_each_arg);
+        ret = listForEach(&map->map_[b], hashMapForEachCallback, &for_each_arg);
+        if(ret == LIST_FE_BREAK) 
+        {
+            return HM_FE_BREAK;
+        }
     }
+
+    return HM_FE_OK;
 }
 
 
-void hashMapDestroy(HashMap *map, HashMapCallbackFn free_data) 
+void hashMapDestroy(HashMap *map, HashMapDataCallbackFn free_data) 
 {
     if(map->map_ == NULL) 
     {

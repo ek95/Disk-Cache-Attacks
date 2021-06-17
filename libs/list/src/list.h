@@ -4,6 +4,10 @@
 #include <stddef.h>
 
 
+#define LIST_FE_OK 0
+#define LIST_FE_BREAK 1
+
+
 typedef struct _ListNode_
 {
     void *data_;
@@ -20,14 +24,14 @@ typedef struct _List_
 } List;
 
 typedef int (*ListCmpFn)(void *data, void *cmp_data);
-typedef void (*ListDataCallbackArgFn)(void *data, void *arg);
-typedef void (*ListDataCallbackFn)(void *data);
+typedef int (*ListDataCallbackFn)(void *data);
+typedef int (*ListDataCallbackArgFn)(void *data, void *arg);
 
 
 void listInit(List *list, size_t elem_size);
 ListNode *listGetIndex(List *list, size_t index);
-void listForEach(List *list, ListDataCallbackArgFn callback, void *arg);
-void listForEachSimple(List *list, ListDataCallbackFn callback);
+int listForEach(List *list, ListDataCallbackArgFn callback, void *arg);
+int listForEachSimple(List *list, ListDataCallbackFn callback);
 ListNode *listSearchFirst(List *list, void *data, ListCmpFn cmp);
 ListNode *listSearchLast(List *list, void *value, ListCmpFn cmp);
 ListNode *listAppendNodeFront(List *list, ListNode *node);
