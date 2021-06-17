@@ -24,6 +24,8 @@
 /*-----------------------------------------------------------------------------
  * TYPE DEFINITIONS
  */
+typedef int (*TargetsEvictedFn)(void *arg);
+
 typedef struct _TargetPage_ 
 {
     uint64_t no_eviction_ : 1;
@@ -85,11 +87,13 @@ typedef struct _PageAccessThreadESData_
 {
     pthread_t tid_;
     Attack *attack_;
-    size_t page_offset_;
-    size_t size_pages_;
+    size_t access_offset_;
+    size_t access_len_;
+    size_t accessed_mem_;
+    TargetsEvictedFn targets_evicted_fn_; 
+    void *targets_evicted_arg_ptr_;
     sem_t *start_sem_;
     sem_t *join_sem_;
-    size_t accessed_mem_;
 } PageAccessThreadESData;
 
 typedef struct _AttackWorkingSet_
@@ -173,7 +177,6 @@ typedef struct _Attack_
     struct timespec event_wait_time_;
 } Attack;
 
-typedef int (*TargetsEvictedFn)(void *arg);
 
 
 

