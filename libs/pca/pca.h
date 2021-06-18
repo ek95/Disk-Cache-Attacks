@@ -100,17 +100,18 @@ typedef struct _AttackWorkingSet_
 {
     uint64_t evaluation_ : 1;
     uint64_t eviction_ignore_evaluation_ : 1;
-    uint64_t unused_ : 62; // align to 8bytes
+    uint64_t access_use_file_api_ : 1;
+    uint64_t unused_ : 61; // align to 8bytes
 
     char **search_paths_;
     size_t checked_files_;
     size_t memory_checked_;
-    size_t mem_in_ws_;
-    size_t tmp_mem_in_ws_;
-    List resident_files_;
-    List non_resident_files_;
-    List tmp_resident_files_;
-    List tmp_non_resident_files_;
+    // two lists to avoid locking
+    size_t up_to_date_list_set_;
+    size_t list_set_references_[2];
+    List resident_files_[2];
+    List non_resident_files_[2];
+    size_t mem_in_ws_[2];
     size_t ps_add_threshold_;
     size_t access_thread_count_;
     size_t access_threads_per_pu_;
@@ -140,12 +141,11 @@ typedef struct _AttackSuppressSet_
 
 typedef struct _PageAccessThreadWSData_
 {
-    pthread_mutex_t resident_files_lock_;
-    List resident_files_;
-    struct timespec sleep_time_;
-    int running_;
     pthread_t tid_;
-    pthread_attr_t thread_attr_;
+    int id_;
+    int running_;
+    AttackWorkingSet *ws_;
+    struct timespec sleep_time_;
 } PageAccessThreadWSData;
 
 typedef struct _Attack_

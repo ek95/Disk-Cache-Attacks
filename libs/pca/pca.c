@@ -1,4 +1,5 @@
 #include "pca.h"
+
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -6,7 +7,7 @@
 #include <ctype.h>
 #include <errno.h>
 #include <pthread.h>
-#ifdef _linux
+#ifdef __linux
 #include <fcntl.h>
 #include <fts.h>
 #include <memory.h>
@@ -23,6 +24,7 @@
 #include <zconf.h>
 #include <assert.h>
 #include <limits.h>
+#include <linux/limits.h>
 #elif defined(__WIN32)
 #include "windows.h"
 #endif
@@ -157,10 +159,11 @@ int initAttackWorkingSet(AttackWorkingSet *ws)
     {
         return -1;
     }
-    listInit(&ws->resident_files_, sizeof(CachedFile));
-    listInit(&ws->non_resident_files_, sizeof(CachedFile));
-    listInit(&ws->tmp_resident_files_, sizeof(CachedFile));
-    listInit(&ws->tmp_non_resident_files_, sizeof(CachedFile));
+    for(size_t i = 0; i < 2; i++)
+    {
+        listInit(&ws->resident_files_[i], sizeof(CachedFile));
+        listInit(&ws->non_resident_files_[i], sizeof(CachedFile));
+    }
 
     return 0;
 }
@@ -169,10 +172,11 @@ int initAttackWorkingSet(AttackWorkingSet *ws)
 void closeAttackWorkingSet(AttackWorkingSet *ws)
 {
     dynArrayDestroy(&ws->access_threads_, closePageAccessThreadWSData);
-    listDestroy(&ws->resident_files_, closeCachedFile);
-    listDestroy(&ws->non_resident_files_, closeCachedFile);
-    listDestroy(&ws->tmp_resident_files_, closeCachedFile);
-    listDestroy(&ws->tmp_non_resident_files_, closeCachedFile);
+    for(size_t i = 0; i < 2; i++)
+    {
+        listDestroy(&ws->resident_files_[i], closeCachedFile);
+        listDestroy(&ws->non_resident_files_[i], closeCachedFile);
+    }
 }
 
 
@@ -277,22 +281,26 @@ int initAttack(Attack *attack)
         return -1;
     }
 
-    if (initAttackWorkingSet(&attack->working_set_) != 0)
-    {
-        return -1;
-    }
-
     if (initAttackBlockingSet(&attack->blocking_set_) != 0)
     {
         return -1;
     }
 
-    if (hashMapInit(&attack->targets_, sizeof(TargetFile), 1023) != 0)
+    if (initAttackWorkingSet(&attack->working_set_) != 0)
+    {
+        return -1;
+    }
+    // needed for lockless working set updating
+    attack->working_set_.list_set_references_[0] = 
+        (attack->eviction_set_.use_access_threads_ ? attack->eviction_set_.access_thread_count_ : 1) +
+        attack->working_set_.access_thread_count_;
+
+    if (initAttackSuppressSet(&attack->suppress_set_) != 0)
     {
         return -1;
     }
 
-    if (initAttackSuppressSet(&attack->suppress_set_) != 0)
+    if (hashMapInit(&attack->targets_, sizeof(TargetFile), 1023) != 0)
     {
         return -1;
     }
@@ -391,8 +399,8 @@ int pcaStart(Attack *attack, int flags)
 
 
         // TODO move to main
-        printf(INFO "%zu files with %zu mapped bytes of sequences bigger than %zu pages are currently resident in memory.\n",
-               attack.working_set_.resident_files_.count_, attack.working_set_.mem_in_ws_, attack.working_set_.ps_add_threshold_);
+        //printf(INFO "%zu files with %zu mapped bytes of sequences bigger than %zu pages are currently resident in memory.\n",
+        //       attack->working_set_.resident_files_.count_, attack->working_set_.mem_in_ws_, attack->working_set_.ps_add_threshold_);
     }
 
     // create + map attack eviction set
@@ -425,7 +433,7 @@ int pcaStart(Attack *attack, int flags)
     }
 
     // start manager for working set
-    if (attack->use_attack_ws_ && pthread_create(&attack.ws_manager_thread_, &thread_attr, wsManagerThread, &attack.working_set_) != 0)
+    if (attack->use_attack_ws_ && pthread_create(&attack->ws_manager_thread_, NULL, wsManagerThread, &attack->working_set_) != 0)
     {
         DEBUG_PRINT((DEBUG "Error " OSAL_EC_FS " at pthread_create...\n", OSAL_EC));
     }
@@ -433,14 +441,14 @@ int pcaStart(Attack *attack, int flags)
     // start manager for blocking set
     if (attack->use_attack_bs_)
     {
-        if (pthread_create(&attack->bs_manager_thread_, &thread_attr, bsManagerThread, &attack.blocking_set_) != 0)
+        if (pthread_create(&attack->bs_manager_thread_, NULL, bsManagerThread, &attack->blocking_set_) != 0)
         {
             DEBUG_PRINT((DEBUG "Error " OSAL_EC_FS " at pthread_create...\n", OSAL_EC));
         }
         else
         {
             // wait till blocking set is initialized
-            sem_wait(&attack.blocking_set_.initialized_sem_);
+            sem_wait(&attack->blocking_set_.initialized_sem_);
         }
     }
 
@@ -988,14 +996,20 @@ size_t evictTargets__(Attack *attack, TargetsEvictedFn targets_evicted_fn, void 
     volatile uint8_t tmp = 0;
     (void)tmp;
     size_t accessed_mem = 0;
+    static size_t current_ws_list_set = 0;
 
+    // switch to up to date ws lists if possible
+    switchToUpToDateWsListSet(attack, &current_ws_list_set);
 
+    // access memory
     for (size_t pos = access_offset; pos < (access_offset + access_len); pos += PAGE_SIZE)
     {
         // access ws
         if (accessed_mem % attack->eviction_set_.ws_access_all_x_bytes_ == 0)
         {
-            // TODO access working set
+            activateWS(&attack->working_set_.resident_files_[current_ws_list_set], 
+                attack->working_set_.resident_files_[current_ws_list_set].count_, 
+                attack->working_set_.access_use_file_api_);
         }
 
         // prefetch larger blocks (more efficient IO)
@@ -1185,8 +1199,25 @@ error:
 
 
 
+int switchToUpToDateWsListSet(Attack *attack, size_t *current_list_set)
+{
+    size_t up_to_date_list_set = __atomic_load_n(&attack->working_set_.up_to_date_list_set_, __ATOMIC_RELAXED);
+    // okay we need to switch
+    if(*current_list_set != up_to_date_list_set)
+    {
+        // register for new list set, unregister from old one
+        __atomic_add_fetch(&attack->working_set_.list_set_references_[up_to_date_list_set], 1, __ATOMIC_RELAXED);
+        __atomic_sub_fetch(&attack->working_set_.list_set_references_[*current_list_set], 1, __ATOMIC_RELAXED);
+        // switch
+        *current_list_set = up_to_date_list_set;
+        return 1;
+    }
 
-int profileResidentPagesFile(Attack *attack, char *file_path) 
+    return 0;
+}
+
+
+int profileResidentPagesFile(Attack *attack, char *file_path, size_t list_set) 
 {
     CachedFile current_cached_file;
     TargetFile *target_file = NULL;
@@ -1240,7 +1271,7 @@ int profileResidentPagesFile(Attack *attack, char *file_path)
     else
     {
         // skip in case of errors
-        if (!listAppendBack(&attack->working_set_.resident_files_, &current_cached_file))
+        if (!listAppendBack(&attack->working_set_.resident_files_[list_set], &current_cached_file))
         {
             goto error;
         }
@@ -1249,14 +1280,17 @@ int profileResidentPagesFile(Attack *attack, char *file_path)
     // statistics
     attack->working_set_.checked_files_++;
     attack->working_set_.memory_checked_ += current_cached_file.mapping_.size_;
-    attack->working_set_.mem_in_ws_ += current_cached_file.resident_memory_;
+    attack->working_set_.mem_in_ws_[list_set] += current_cached_file.resident_memory_;
 
     // cleanup
-#ifdef WS_MAP_FILE
+if(!attack->working_set_.access_use_file_api_)
+{
     closeFileOnly(&current_cached_file.mapping_);
-#else
+}
+else 
+{
     closeMappingOnly(&current_cached_file.mapping_);
-#endif
+}
     freeFileCacheStatus(&current_cached_file.mapping_);
     return 0;
 
@@ -1291,6 +1325,8 @@ void targetFileCacheStatusMaskReadahead(TargetFile *target_file, FileMapping *ta
             target_file_mapping->pages_cache_status_[p] = 0;
     }
 }
+
+ 
 
 
 int profileResidentPageSequences(CachedFile *current_cached_file, size_t ps_add_threshold)
@@ -1375,9 +1411,10 @@ int pageSeqCmp(void *node, void *data)
 #ifdef __linux
 int profileAttackWorkingSet(Attack *attack)
 {
+    int ret = 0;
     FTS *fts_handle = NULL;
     FTSENT *current_ftsent = NULL;
-    int ret = 0;
+    size_t inactive_list_set = __atomic_load_n(&attack->working_set_.up_to_date_list_set_, __ATOMIC_RELAXED) ^ 1;
 
     // use fts to traverse over all files in the searchpath
     fts_handle = fts_open(attack->working_set_.search_paths_, FTS_PHYSICAL, NULL);
@@ -1413,10 +1450,13 @@ int profileAttackWorkingSet(Attack *attack)
         if (current_ftsent->fts_info == FTS_F)
         {
             // if failed for one file ignore and just try the next one
-           profileResidentPagesFile(attack, current_ftsent->fts_path);
+           profileResidentPagesFile(attack, current_ftsent->fts_path, inactive_list_set);
         }
     }
             
+    // all went well, change active list set
+    __atomic_store_n(&attack->working_set_.up_to_date_list_set_, inactive_list_set, __ATOMIC_RELAXED);
+
     goto cleanup;
 error:
     ret = -1;
@@ -1428,7 +1468,7 @@ cleanup:
     return ret;
 }
 #elif defined (_WIN32)
-static int profileAttackWorkingSetFolder(Attack *attack, char *folder)
+static int profileAttackWorkingSetFolder(Attack *attack, char *folder, size_t list_set)
 {
     char *full_pattern[OSAL_MAX_PATH_LEN];
     WIN32_FIND_DATA find_file_data;
@@ -1452,14 +1492,14 @@ static int profileAttackWorkingSetFolder(Attack *attack, char *folder)
         PathCombineA(full_pattern, folder, find_file_data.cFileName);
         if(find_file_data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
         {
-            if(profileAttackWorkingSetFolder(attack, full_pattern, pattern) != 0) 
+            if(profileAttackWorkingSetFolder(attack, full_pattern, pattern, list_set) != 0) 
             {
                return -1; 
             }
         }
         else 
         {
-            profileResidentPagesFile(attack, full_pattern);                
+            profileResidentPagesFile(attack, full_pattern, list_set);                
         }
     } while(FindNextFile(handle, &find_file_data));
     
@@ -1470,15 +1510,19 @@ static int profileAttackWorkingSetFolder(Attack *attack, char *folder)
 int profileAttackWorkingSet(Attack *attack)
 {
     int ret = 0;
+    size_t inactive_list_set = __atomic_load_n(&attack->working_set_.up_to_date_list_set_, __ATOMIC_RELAXED) ^ 1;
 
     for(size_t i < 0; attack->working_set_.search_paths_[i] != NULL && running; i++) 
     {
-        if(profileAttackWorkingSetFolder(attack, attack->working_set_.search_paths_[i]) != 0)
+        if(profileAttackWorkingSetFolder(attack, attack->working_set_.search_paths_[i], inactive_list_set) != 0)
         {
             goto error;
         }
     }
     
+    // all went well, change active list set
+    __atomic_store_n(&attack->working_set_.up_to_date_list_set_, inactive_list_set, __ATOMIC_RELAXED);
+
     return 0;
 
 error:
@@ -1487,6 +1531,87 @@ error:
     return ret;
 }
 #endif
+
+
+size_t activateWS(ListNode *resident_files_start, size_t resident_files_count, int use_file_api)
+{
+    CachedFile *current_cached_file = NULL;
+    ListNode *resident_files_node = resident_files_start;
+    size_t accessed_files_count = 0;
+    size_t accessed_pages = 0;
+    PageSequence *resident_page_sequences = NULL;
+    size_t resident_page_sequences_length = 0;
+    volatile uint8_t tmp;
+    (void) tmp;
+    
+    while (resident_files_node != NULL && accessed_files_count < resident_files_count)
+    {
+        current_cached_file = (CachedFile *)resident_files_node->data_;
+
+        resident_page_sequences = current_cached_file->resident_page_sequences_.data_;
+        resident_page_sequences_length = current_cached_file->resident_page_sequences_.size_;
+
+        for (size_t s = 0; s < resident_page_sequences_length; s++)
+        {
+            for (size_t p = resident_page_sequences[s].offset_; p < resident_page_sequences[s].offset_ +
+                resident_page_sequences[s].length_; p++)
+            {
+                //DEBUG_PRINT((DEBUG INFO "Accessing offset %zu, %zu length\n", resident_page_sequences[s].offset_, 
+                //    resident_page_sequences[s].length_);
+        // access page
+                if(use_file_api) 
+                {
+#ifdef __linux
+                    if (pread(current_cached_file->mapping_.internal_.fd_, (void *)&tmp, 1, p * PAGE_SIZE) != 1 ||
+                        pread(current_cached_file->mapping_.internal_.fd_, (void *)&tmp, 1, p * PAGE_SIZE) != 1 )
+                    {
+                        // in case of error just print warnings and access whole ES
+                        DEBUG_PRINT((DEBUG "Warning error " OSAL_EC_FS " at pread...\n", OSAL_EC));
+                    }
+#elif defined(_WIN32)
+            // TODO implement
+#endif
+                }
+                else 
+                {
+                    tmp = *((uint8_t *) current_cached_file->mapping_.addr_ + p * PAGE_SIZE);
+                } 
+                accessed_pages++;  
+            }         
+
+        accessed_files_count++;
+        resident_files_node = resident_files_node->next_;
+    }
+    return accessed_pages * PAGE_SIZE;
+}
+
+
+void *pageAccessThreadWS(void *arg)
+{
+    PageAccessThreadWSData *page_thread_data = arg; 
+    static size_t current_ws_list_set = 0;
+    ListNode *resident_files_start = NULL;
+    size_t accessed_memory = 0;
+
+    while (__atomic_load_n(&page_thread_data->running_, __ATOMIC_RELAXED))
+    {
+        DEBUG_PRINT((DEBUG WS_MGR_TAG "Worker thread (PSL: %p) running on core %d.\n", (void *)page_thread_data->resident_files_.head_, sched_getcpu()));
+        // switch to up to date ws lists if possible
+        // if switch happened update current list pointer
+        if(switchToUpToDateWsListSet(attack, &current_ws_list_set)) 
+        {
+            resident_files_start = 
+        }        
+        accessed_memory = activateWS();
+        DEBUG_PRINT((DEBUG WS_MGR_TAG "Worker thread (PSL: %p) accessed %zu kB memory.\n", (void *)page_thread_data->resident_files_.head_, accessed_memory / 1024));
+
+        nanosleep(&page_thread_data->sleep_time_, NULL);
+    }
+
+    return NULL;
+}
+
+
 
 size_t getMappingCount(const unsigned char *status, size_t size_in_pages)
 {
