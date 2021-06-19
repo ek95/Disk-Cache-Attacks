@@ -10,7 +10,8 @@
 #include "hashmap.h"
 #include "filemap.h"
 #include "osal.h"
-#ifdef _linux
+#ifdef __linux
+#include <pthread.h>
 #include "pageflags.h"
 #endif
 
@@ -49,18 +50,19 @@ typedef struct _TargetFile_
     };
 } TargetFile;
 
-typedef struct _CachedFile_
-{
-    FileMapping mapping_;
-    size_t resident_memory_;
-    DynArray resident_page_sequences_;
-} CachedFile;
-
 typedef struct _FillUpProcess_
 {
     osal_pid_t pid_;
     size_t fillup_size_;
 } FillUpProcess;
+
+typedef struct _CachedFile_
+{
+    FileMapping mapping_;
+    size_t resident_memory_;
+    DynArray resident_page_sequences_;
+    TargetFile *linked_target_file_;
+} CachedFile;
 
 typedef struct _AttackEvictionSet_
 {
@@ -96,31 +98,6 @@ typedef struct _PageAccessThreadESData_
     sem_t *join_sem_;
 } PageAccessThreadESData;
 
-typedef struct _AttackWorkingSet_
-{
-    uint64_t evaluation_ : 1;
-    uint64_t eviction_ignore_evaluation_ : 1;
-    uint64_t access_use_file_api_ : 1;
-    uint64_t unused_ : 61; // align to 8bytes
-
-    char **search_paths_;
-    size_t checked_files_;
-    size_t memory_checked_;
-    // two lists to avoid locking
-    size_t up_to_date_list_set_;
-    size_t list_set_references_[2];
-    List resident_files_[2];
-    List non_resident_files_[2];
-    size_t mem_in_ws_[2];
-    size_t ps_add_threshold_;
-    size_t access_thread_count_;
-    size_t access_threads_per_pu_;
-    DynArray access_threads_;
-    struct timespec access_sleep_time_;
-    struct timespec evaluation_sleep_time_;
-    size_t profile_update_all_x_evaluations_;
-} AttackWorkingSet;
-
 typedef struct _AttackBlockingSet_
 {
     char *meminfo_file_path_;
@@ -133,11 +110,29 @@ typedef struct _AttackBlockingSet_
     uint8_t initialized_;
 } AttackBlockingSet;
 
-typedef struct _AttackSuppressSet_
+typedef struct _AttackWorkingSet_
 {
-    DynArray target_readahead_window_;
+    uint64_t evaluation_ : 1;
+    uint64_t eviction_ignore_evaluation_ : 1;
+    uint64_t access_use_file_api_ : 1;
+    uint64_t unused_ : 61; // align to 8bytes
+
+    char **search_paths_;
+    size_t checked_files_;
+    size_t memory_checked_;
+    // two sets of lists, protected by a read-write lock
+    size_t up_to_date_list_set_;
+    List resident_files_[2];
+    List non_resident_files_[2];
+    size_t mem_in_ws_[2];
+    pthread_rwlock_t ws_lists_lock_;
+    size_t ps_add_threshold_;
+    size_t access_thread_count_;
+    DynArray access_threads_;
     struct timespec access_sleep_time_;
-} AttackSuppressSet;
+    struct timespec evaluation_sleep_time_;
+    size_t profile_update_all_x_evaluations_;
+} AttackWorkingSet;
 
 typedef struct _PageAccessThreadWSData_
 {
@@ -148,13 +143,20 @@ typedef struct _PageAccessThreadWSData_
     struct timespec sleep_time_;
 } PageAccessThreadWSData;
 
+typedef struct _AttackSuppressSet_
+{
+    DynArray target_readahead_window_;
+    struct timespec access_sleep_time_;
+} AttackSuppressSet;
+
 typedef struct _Attack_
 {
-    uint64_t use_attack_ws_ : 1;
     uint64_t use_attack_bs_ : 1;
+    uint64_t use_attack_ws_ : 1;
+    uint64_t use_attack_ss_ : 1;
     uint64_t mlock_self_ : 1;
     uint64_t sampling_mode_: 1;
-    uint64_t unused_ : 60; // align to 8 byte
+    uint64_t unused_ : 59; // align to 8 byte
 
     AttackEvictionSet eviction_set_;
     AttackWorkingSet working_set_;
