@@ -50,10 +50,15 @@ typedef struct _PageSequence_
 
 typedef struct _TargetFile_ 
 {
+    uint64_t has_target_pages_ : 1;
+    uint64_t has_target_sequence_ : 1;
+    uint64_t is_target_file_ : 1;
+    uint64_t unused_: 61;
     FileMapping mapping_;
     union 
     {
         DynArray target_pages_;
+        DynArray suppress_sequences_;
         PageSequence target_sequence_;
     };
 } TargetFile;
@@ -84,6 +89,7 @@ typedef struct _AttackEvictionSet_
     size_t initialise_max_runs_;  
     size_t targets_check_all_x_bytes_;
     size_t ws_access_all_x_bytes_;
+    size_t ss_access_all_x_bytes_;
     size_t prefetch_es_bytes_;
     // only used if ES_USE_THREADS is defined
     size_t access_thread_count_;
@@ -157,7 +163,9 @@ typedef struct _PageAccessThreadWSData_
 
 typedef struct _AttackSuppressSet_
 {
-    DynArray target_readahead_window_;
+    uint64_t use_file_api_: 1;
+    uint64_t unused_ : 63; // align to 8bytes
+    DynArray suppress_set_;
     struct timespec access_sleep_time_;
 } AttackSuppressSet;
 
@@ -167,7 +175,6 @@ typedef struct _Attack_
     uint64_t use_attack_ws_ : 1;
     uint64_t use_attack_ss_ : 1;
     uint64_t mlock_self_ : 1;
-    uint64_t sampling_mode_: 1;
     uint64_t unused_ : 59; // align to 8 byte
 
     AttackEvictionSet eviction_set_;
