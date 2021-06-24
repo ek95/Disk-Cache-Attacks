@@ -15,7 +15,6 @@
 #include "osal.h"
 #ifdef __linux
 #include <pthread.h>
-#include "pageflags.h"
 #endif
 
 
@@ -23,7 +22,9 @@
  * DEFINES
  */
 #define FCA_ARRAY_INIT_CAP 10
-#define FCA_TARGETS_CONFIG_MAX_LINE_LENGTH 1024
+#define FCA_IN_LINE_MAX 1024
+#define FCA_LINUX_MEMINFO_PATH "/proc/meminfo"
+#define FCA_LINUX_MEMINFO_AVAILABLE_MEM_TAG "MemAvailable:"
 #define FCA_WINDOWS_BS_SEMAPHORE_NAME "Local\FCA_BS_CHILD"
 #define FCA_WINDOWS_BS_COMMANDLINE "-b"
 #define FCA_START_WIN_SPAWN_BS_CHILD 0x01
@@ -37,6 +38,9 @@
 /*-----------------------------------------------------------------------------
  * TYPE DEFINITIONS
  */
+// forward declaration
+typedef struct _Attack_ Attack;
+
 typedef int (*TargetsEvictedFn)(void *arg);
 
 typedef struct _TargetPage_ 
@@ -65,7 +69,7 @@ typedef struct _TargetFile_
             uint64_t unused_: 61;
         };
         uint64_t flags_;
-    }
+    };
     FileMapping mapping_;
     union 
     {
@@ -129,7 +133,6 @@ typedef struct _PageAccessThreadESData_
 typedef struct _AttackBlockingSet_
 {
     pthread_t manager_thread_;
-    char *meminfo_file_path_;
     DynArray fillup_processes_;
     size_t def_fillup_size_;
     size_t min_available_mem_;
@@ -146,7 +149,7 @@ typedef struct _AttackWorkingSet_
     uint64_t access_use_file_api_ : 1;
     uint64_t unused_ : 61; // align to 8bytes
 
-    pthread_t ws_manager_thread_;
+    pthread_t manager_thread_;
     char **search_paths_;
     size_t checked_files_;
     size_t memory_checked_;

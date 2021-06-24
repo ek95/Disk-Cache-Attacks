@@ -2,15 +2,15 @@ cmake_minimum_required(VERSION 3.10)
 
 project(hashmap C)
 
-set(CMAKE_C_STANDARD 99)
+set(CMAKE_C_STANDARD 11)
 
 # release flags
 set(CMAKE_C_FLAGS_RELEASE "-O3 -Wall -Wunused -Wpedantic")
-set(CMAKE_EXE_LINKER_FLAGS_RELEASET "-s")
+set(CMAKE_EXE_LINKER_FLAGS_RELEASE "-s")
 # debuginfo flags 
 set(CMAKE_C_FLAGS_DEBUGINFO "-g3 -Wall -Wunused -Wpedantic")
 # debug flags
-set(CMAKE_C_FLAGS_DEBUG"-g -fsanitize=address -fsanitize=thread -Wall -Wunused -Wpedantic")
+set(CMAKE_C_FLAGS_DEBUG "-g -fsanitize=address -fsanitize=thread -Wall -Wunused -Wpedantic")
 set(CMAKE_EXE_LINKER_FLAGS_DEBUG "-fsanitize=address -fsanitize=thread")
 
 # default to release build

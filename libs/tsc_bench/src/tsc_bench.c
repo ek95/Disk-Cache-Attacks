@@ -201,7 +201,10 @@ static uint64_t auto_determine_tsc_freq()
   {
     goto exit;
   }
-  fscanf(file, "%" PRIu64, &tsc_freq);
+  if (fscanf(file, "%" PRIu64, &tsc_freq) != 1)
+  {
+      goto exit;
+  }
   fclose(file);
 #elif defined(_WIN32)
   LARGE_INTEGER freq;

@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.10)
 
-project(dynarray C)
+project(fca C)
 
 set(CMAKE_C_STANDARD 11)
 
@@ -22,6 +22,17 @@ endif()
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+
+# external libs
+include_directories(../dynarray/src)
+add_subdirectory(../dynarray lib/dynarray)
+include_directories(../list/src)
+#add_subdirectory(../list lib/list)
+include_directories(../hashmap/src)
+add_subdirectory(../hashmap lib/hashmap)
+include_directories(../filemap/src)
+add_subdirectory(../filemap lib/filemap)
+include_directories(../debug/src)
 
 # enable ctest
 enable_testing()

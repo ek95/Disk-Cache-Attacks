@@ -66,7 +66,7 @@ static int eviction_running = 0;
 /*-----------------------------------------------------------------------------
  * FUNCTION PROTOTYPES
  */
-static void initTargetFile(TargetFile *target_file) 
+static void initTargetFile(TargetFile *target_file, int type);
 static void closeTargetFile(void *arg); 
 static void closeTargetFileTargetsOnly(void *arg);
 static void initFillUpProcess(FillUpProcess *fp);
@@ -148,7 +148,7 @@ static void *pageAccessThreadWS(void *arg);
 static int reevaluateWorkingSet(Attack *attack);
 static int reevaluateWorkingSetList(List *cached_file_list, Attack *attack, size_t inactive_list_set);
 
-static int spawnSuppressThreads(Attack *attack)
+static int spawnSuppressThreads(Attack *attack);
 static int prepareSuppressSet(Attack *attack);
 static int targetsHmPrepareSuppressSet(void *data, void *arg);
 static void activateSS(DynArray *suppress_set, int use_file_api);
@@ -162,7 +162,7 @@ static size_t getMappingCount(const unsigned char *status, size_t size_in_pages)
  */
 void initTargetFile(TargetFile *target_file, int type) 
 {
-    memset(target_file, 0, sizoeof(TargetFile));
+    memset(target_file, 0, sizeof(TargetFile));
     initFileMapping(&target_file->mapping_);
     if(type == FCA_TARGET_TYPE_PAGES)
     {
@@ -372,7 +372,7 @@ void closePageAccessThreadWSData(void *arg)
 int initAttackSuppressSet(AttackSuppressSet *ss)
 {
     memset(ss, 0, sizeof(AttackSuppressSet));
-    if (!dynArrayInit(&ss->suppress_set_, sizeof(TargetFile)), FCA_ARRAY_INIT_CAP))
+    if (!dynArrayInit(&ss->suppress_set_, sizeof(TargetFile), FCA_ARRAY_INIT_CAP))
     {
         return -1;
     }
@@ -567,7 +567,7 @@ int fcaStart(Attack *attack, int flags)
         DEBUG_PRINT((DEBUG ES_TAG FAIL "Error " OSAL_EC_FS " at createEvictionSet...\n", OSAL_EC));
         goto error;
     }
-    DEBUG_PRINT((DEBUG ES_TAG OK "Trying to create a %zu MB eviction set.", 
+    DEBUG_PRINT((DEBUG ES_TAG OK "Trying to create a %zu MB eviction set.\n"));
     // if wanted spawn eviction threads
     if(attack->eviction_set_.use_access_threads_)
     {
@@ -596,7 +596,7 @@ int fcaStart(Attack *attack, int flags)
     if (attack->use_attack_ws_)
     {
         DEBUG_PRINT((DEBUG WS_TAG INFO "Spawning working set manager thread...\n"));
-        if(pthread_create(&attack->ws_manager_thread_, NULL, wsManagerThread, attack) != 0)
+        if(pthread_create(&attack->working_set_.manager_thread_, NULL, wsManagerThread, attack) != 0)
         {
             DEBUG_PRINT((DEBUG WS_TAG FAIL "Error " OSAL_EC_FS " at pthread_create...\n", OSAL_EC));
         }
@@ -608,7 +608,7 @@ int fcaStart(Attack *attack, int flags)
     if (attack->use_attack_bs_)
     {
         DEBUG_PRINT((DEBUG BS_TAG INFO "Spawning blocking set manager thread...\n"));
-        if (pthread_create(&attack->bs_manager_thread_, NULL, bsManagerThread, &attack->blocking_set_) != 0)
+        if (pthread_create(&attack->blocking_set_.manager_thread_, NULL, bsManagerThread, &attack->blocking_set_) != 0)
         {
             DEBUG_PRINT((DEBUG BS_TAG FAIL "Error " OSAL_EC_FS " at pthread_create...\n", OSAL_EC));
             goto error;
@@ -678,7 +678,7 @@ int fcaAddTargetsFromFile(Attack *attack, char *targets_config_file_path)
 {
     int ret = 0;
     FILE *targets_config_file = NULL;
-    char *line_buffer[FCA_TARGETS_CONFIG_MAX_LINE_LENGTH] = {0};
+    char *line_buffer[FCA_IN_LINE_MAX] = {0};
     size_t line_length = 0;
     int parse_pages = 0;
     char current_target_file_path_abs[OSAL_MAX_PATH_LEN];
@@ -697,7 +697,7 @@ int fcaAddTargetsFromFile(Attack *attack, char *targets_config_file_path)
     while(1) 
     {
         // read one line
-        if(fgets(line_buffer, FCA_TARGETS_CONFIG_MAX_LINE_LENGTH, targets_config_file) == NULL)
+        if(fgets(line_buffer, FCA_IN_LINE_MAX, targets_config_file) == NULL)
         {
             if(feof(targets_config_file)) 
             {
@@ -786,7 +786,7 @@ int fcaAddTargetsFromFile(Attack *attack, char *targets_config_file_path)
             }
             // advise random access to avoid readahead (we dont want to change the working set)
             // if it does not work ignore
-            if(adviseFileUsage(&target_file.mapping_, 0, 0, FILE_USAGE_RANDOM) != 0) 
+            if(adviseFileUsage(&current_target_file.mapping_, 0, 0, FILE_USAGE_RANDOM) != 0) 
             {
                 DEBUG_PRINT((DEBUG WARNING "Error " OSAL_EC_FS " at adviseFileUsage...\n", OSAL_EC));
             }
@@ -883,7 +883,7 @@ int fcaTargetFilePageSequenceSampleFlushOnce(Attack *attack, TargetFile *target_
     ssize_t accessed_memory = 0;
 
     // has to have a target sequence, else it is invalid
-    if(target_file->target_sequence_ != 1)
+    if(target_file->has_target_sequence_ != 1)
     {
         DEBUG_PRINT((DEBUG FAIL "Error: Contains no target page sequence...\n", OSAL_EC));
         return -1;
@@ -1179,7 +1179,7 @@ error:
 ssize_t evictTargets(Attack *attack, TargetsEvictedFn targets_evicted_fn, void *target_evicted_arg_ptr) 
 {
     // single thread
-    if(!es->use_access_threads_)
+    if(!attack->eviction_set_.use_access_threads_)
     {
         return evictTargets_(attack, targets_evicted_fn, target_evicted_arg_ptr);
     }
@@ -1345,7 +1345,7 @@ void *pageAccessThreadES(void *arg)
         if (sem_post(thread_data->join_sem_) != 0)
         {
             DEBUG_PRINT((DEBUG ES_TAG WORKER_TAG FAIL "Error " OSAL_EC_FS " at sem_post (%p)...\n", pthread_self(), 
-                OSAL_EC, (void *)thread_data->join_sem_);
+                OSAL_EC, (void *)thread_data->join_sem_));
             goto error;
         }
     }
@@ -1468,7 +1468,7 @@ void *bsManagerThread(void *arg)
             if(mem_diff >= bs->def_fillup_size_)
             {
                 DEBUG_PRINT((DEBUG BS_TAG INFO "Too much physical memory available, trying to block %zu kB...\n",
-                    mem_diff / 1024);
+                    mem_diff / 1024));
                 blockRAM(bs, mem_diff);
             }
         }
@@ -1499,7 +1499,7 @@ size_t parseAvailableMem(AttackBlockingSet *bs)
     size_t available_mem = 0;
 
     // open meminfo file
-    meminfo_file = fopen(bs->meminfo_file_path_, "r");
+    meminfo_file = fopen(FCA_LINUX_MEMINFO_PATH, "r");
     if (!meminfo_file)
     {
         DEBUG_PRINT((DEBUG BS_TAG WARNING "Available memory could not be parsed!\n"));
@@ -1508,18 +1508,18 @@ size_t parseAvailableMem(AttackBlockingSet *bs)
     }
 
     // canary to see if line was longer as buffer
-    line[IN_LINE_MAX - 1] = 'c';
-    while (fgets(line, IN_LINE_MAX, meminfo_file))
+    line[FCA_IN_LINE_MAX - 1] = 'c';
+    while (fgets(line, FCA_IN_LINE_MAX, meminfo_file))
     {
         // skip lines longer than 255
-        if (line[IN_LINE_MAX - 1] == '\0')
+        if (line[FCA_IN_LINE_MAX - 1] == '\0')
         {
             continue;
         }
 
-        if (strstr(line, MEMINFO_AVAILABLE_MEM_TAG) != NULL)
+        if (strstr(line, FCA_LINUX_MEMINFO_AVAILABLE_MEM_TAG) != NULL)
         {
-            for (size_t c = strlen(MEMINFO_AVAILABLE_MEM_TAG); line[c] != 0; c++)
+            for (size_t c = strlen(FCA_LINUX_MEMINFO_AVAILABLE_MEM_TAG); line[c] != 0; c++)
             {
                 if (isdigit(line[c]))
                 {
@@ -2029,16 +2029,16 @@ int initialProfileResidentPagesFile(Attack *attack, char *file_path)
         current_cached_file.linked_target_file_ = target_file;
         if(target_file->has_target_pages_)
         {
-            targetPagesCacheStatusReadaheadTriggerPagesSet(&current_cached_file.linked_target_file->target_pages_, 
+            targetPagesCacheStatusReadaheadTriggerPagesSet(&current_cached_file.linked_target_file_->target_pages_, 
                 &current_cached_file.mapping_, attack->ra_window_size_pages_, 0);
-            targetPagesCacheStatusSet(&current_cached_file.linked_target_file->target_pages_, 
+            targetPagesCacheStatusSet(&current_cached_file.linked_target_file_->target_pages_, 
                 &current_cached_file.mapping_, 0);
         }  
         else if(target_file->has_target_sequence_)
         {
-            targetSequenceCacheStatusReadaheadTriggerPagesSet(&current_cached_file.linked_target_file->target_sequence_, 
+            targetSequenceCacheStatusReadaheadTriggerPagesSet(&current_cached_file.linked_target_file_->target_sequence_, 
                 &current_cached_file.mapping_, attack->ra_window_size_pages_, 0);
-            targetSequenceCacheStatusSet(&current_cached_file.linked_target_file->target_sequence_, 
+            targetSequenceCacheStatusSet(&current_cached_file.linked_target_file_->target_sequence_, 
                 &current_cached_file.mapping_, 0);
         }
         // TODO FIXME target sequences are currently not supported here (was not needed)
@@ -2099,22 +2099,22 @@ void targetPagesCacheStatusReadaheadTriggerPagesSet(DynArray *target_pages, File
     for(size_t t = 0; t < target_pages->size_; t++)
     {
         TargetPage *target_page = dynArrayGet(target_pages, t);
-        targetPageCacheStatusReadaheadTriggerPagesSet(target_page->offset_, target_file_mapping, back_ra_trigger_window,
-             front_ra_trigger_window, val);
+        targetPageCacheStatusReadaheadTriggerPagesSet(target_page->offset_, target_file_mapping, ra_window_size_pages, 
+            back_ra_trigger_window, front_ra_trigger_window, val);
     }
 }
 
 void targetPageCacheStatusReadaheadTriggerPagesSet(size_t offset, FileMapping *target_file_mapping, 
-    size_t back_ra_trigger_window, size_t front_ra_trigger_window, uint8_t val)
+    size_t ra_window_size_pages, size_t back_ra_trigger_window, size_t front_ra_trigger_window, uint8_t val)
 {
     targetPageCacheStatusReadaheadTriggerPagesBackSet(offset, target_file_mapping,
-        back_ra_trigger_window, val);
+        ra_window_size_pages, back_ra_trigger_window, val);
     targetPageCacheStatusReadaheadTriggerPagesFrontSet(offset, target_file_mapping,
         front_ra_trigger_window, val);
 }
 
 void targetPageCacheStatusReadaheadTriggerPagesBackSet(size_t offset, FileMapping *target_file_mapping, 
-    size_t back_ra_trigger_window, uint8_t val)
+    size_t ra_window_size_pages, size_t back_ra_trigger_window, uint8_t val)
 {
     // trim pages in back that could trigger readahead
     if(offset < ra_window_size_pages) 
@@ -2141,7 +2141,7 @@ void targetPagesCacheStatusSet(DynArray *target_pages, FileMapping *target_file_
 {
     for(size_t t = 0; t < target_pages->size_; t++)
     {
-        TargetPage *target_page = dynArrayGet(target_pages_, t);
+        TargetPage *target_page = dynArrayGet(target_pages, t);
         target_file_mapping->pages_cache_status_[target_page->offset_] = val;
     }
 }
@@ -2153,7 +2153,7 @@ void targetSequenceCacheStatusReadaheadTriggerPagesSet(PageSequence *target_sequ
     size_t back_ra_trigger_window = ra_window_size_pages / 2 - 1;
     size_t front_ra_trigger_window = ra_window_size_pages / 2;
 
-    targetPageCacheStatusReadaheadTriggerPagesBackSet(target_sequence->offset_, target_file_mapping,
+    targetPageCacheStatusReadaheadTriggerPagesBackSet(target_sequence->offset_, target_file_mapping, ra_window_size_pages,
         back_ra_trigger_window, val);
     targetPageCacheStatusReadaheadTriggerPagesFrontSet(target_sequence->offset_ + target_sequence->length_ - 1, target_file_mapping,
         front_ra_trigger_window, val);
@@ -2179,7 +2179,7 @@ int cachedFileProfileResidentPageSequences(CachedFile *current_cached_file, size
     current_cached_file->resident_memory_ = 0;
 
     // profile page sequences
-    resident_pages = fileMappingProfileResidentPageSequences(&current_cached_file->mapping, ps_add_threshold,
+    resident_pages = fileMappingProfileResidentPageSequences(&current_cached_file->mapping_, ps_add_threshold,
         &current_cached_file->resident_page_sequences_);
     if(resident_pages == -1)
     {
@@ -2408,7 +2408,7 @@ void *pageAccessThreadWS(void *arg)
 
     while (__atomic_load_n(&thread_data->running_, __ATOMIC_RELAXED))
     {
-        DEBUG_PRINT((DEBUG WS_TAG WORKER_TAG, INFO "Worker thread started.\n", pthread_self());
+        DEBUG_PRINT((DEBUG WS_TAG WORKER_TAG INFO "Worker thread started.\n", pthread_self()));
        
         // access current working set
         pthread_rwlock_rdlock(&ws->ws_lists_lock_);
@@ -2419,14 +2419,14 @@ void *pageAccessThreadWS(void *arg)
                 ws->access_thread_count_;
             resident_files_start = listGetIndex(&ws->resident_files_[current_ws_list_set], 
                 thread_data->id_ * resident_files_count);
-            DEBUG_PRINT((DEBUG WS_TAG WORKER_TAG, INFO "Worker thread reconfigured to access %zu files beginning with node: %p.\n", 
+            DEBUG_PRINT((DEBUG WS_TAG WORKER_TAG INFO "Worker thread reconfigured to access %zu files beginning with resident files node: %p.\n", 
                 pthread_self(), resident_files_count, (void *) resident_files_start)); 
         }      
         accessed_memory = activateWS(resident_files_start, resident_files_count, 
             ws->access_use_file_api_);
         pthread_rwlock_unlock(&ws->ws_lists_lock_);
 
-        DEBUG_PRINT((DEBUG WS_TAG "Worker thread (head: %p) accessed %zu kB memory.\n", 
+        DEBUG_PRINT((DEBUG WS_TAG WORKER_TAG INFO "Worker thread (resident files head: %p) accessed %zu kB memory.\n", 
             (void *) resident_files_start, accessed_memory / 1024));
 
         // sleep for awhile
@@ -2444,7 +2444,7 @@ int reevaluateWorkingSet(Attack *attack)
     // free inactive list
     listDestroy(&ws->resident_files_[inactive_list_set], closeCachedFileResidentPageSequencesOnly);
     listDestroy(&ws->non_resident_files_[inactive_list_set], closeCachedFileResidentPageSequencesOnly);
-    ws->tmp_mem_in_ws_[inactive_list_set] = 0;
+    ws->mem_in_ws_[inactive_list_set] = 0;
 
     // reevaluate resident files list
     // in case of an error the original lists are not changed
@@ -2454,7 +2454,7 @@ int reevaluateWorkingSet(Attack *attack)
     }
     // reevaluate non resident files list
     // in case of an error the original lists are not changed
-    if (reevaluateWorkingSetList(&ws->non_resident_files_[ws->up_to_date_list_set_], inactive_list_set) < 0)
+    if (reevaluateWorkingSetList(&ws->non_resident_files_[ws->up_to_date_list_set_], attack, inactive_list_set) < 0)
     {
         return -1;
     }
@@ -2479,9 +2479,9 @@ int reevaluateWorkingSetList(List *cached_file_list, Attack *attack, size_t inac
         // copy current cached file and create a new dynarray
         // the copy ensures that the current state is not changed but kept
         current_cached_file = *((CachedFile *)current_cached_file_node->data_);
-        if (!dynArrayInit(&current_cached_file.resident_page_sequences_, sizeof(PageSequence), ARRAY_INIT_CAP))
+        if (!dynArrayInit(&current_cached_file.resident_page_sequences_, sizeof(PageSequence), FCA_ARRAY_INIT_CAP))
         {
-            DEBUG_PRINT((DEBUG FAIL "Error " OSAL_EC_FS " at dynArrayInit...\n", OSAL_EC));
+            DEBUG_PRINT((DEBUG WS_TAG FAIL "Error " OSAL_EC_FS " at dynArrayInit...\n", OSAL_EC));
             goto error;
         }
 
@@ -2489,7 +2489,7 @@ int reevaluateWorkingSetList(List *cached_file_list, Attack *attack, size_t inac
         // get status of the file pages
         if (getCacheStatusFile(&current_cached_file.mapping_) != 0)
         {
-            DEBUG_PRINT((DEBUG FAIL "Error " OSAL_EC_FS " at getCacheStatusFile...\n", OSAL_EC));
+            DEBUG_PRINT((DEBUG WS_TAG FAIL "Error " OSAL_EC_FS " at getCacheStatusFile...\n", OSAL_EC));
             goto error;
         }
         // if file is a target file, zero pages inside the target pages readahead window
@@ -2497,34 +2497,34 @@ int reevaluateWorkingSetList(List *cached_file_list, Attack *attack, size_t inac
         {
             if(current_cached_file.linked_target_file_->has_target_pages_)
             {
-                targetPagesCacheStatusReadaheadTriggerPagesSet(&current_cached_file.linked_target_file->target_pages_, 
+                targetPagesCacheStatusReadaheadTriggerPagesSet(&current_cached_file.linked_target_file_->target_pages_, 
                     &current_cached_file.mapping_, attack->ra_window_size_pages_, 0);
-                targetPagesCacheStatusSet(&current_cached_file.linked_target_file->target_pages_, 
+                targetPagesCacheStatusSet(&current_cached_file.linked_target_file_->target_pages_, 
                     &current_cached_file.mapping_, 0);
             }  
             else if(current_cached_file.linked_target_file_->has_target_sequence_)
             {
-                targetSequenceCacheStatusReadaheadTriggerPagesSet(&current_cached_file.linked_target_file->target_sequence_, 
+                targetSequenceCacheStatusReadaheadTriggerPagesSet(&current_cached_file.linked_target_file_->target_sequence_, 
                     &current_cached_file.mapping_, attack->ra_window_size_pages_, 0);
-                targetSequenceCacheStatusSet(&current_cached_file.linked_target_file->target_sequence_, 
+                targetSequenceCacheStatusSet(&current_cached_file.linked_target_file_->target_sequence_, 
                     &current_cached_file.mapping_, 0);
             }
         }
         // parse page sequences, skip in case of errors
-        if (cachedFileProfileResidentPageSequences(&current_cached_file, ws->ps_add_threshold_) < 0)
+        if (cachedFileProfileResidentPageSequences(&current_cached_file, ws->ps_add_threshold_) != 0)
         {
-            DEBUG_PRINT((DEBUG FAIL "Error " OSAL_EC_FS " at cachedFileProfileResidentPageSequences: %s...\n", OSAL_EC, file_path));
+            DEBUG_PRINT((DEBUG WS_TAG FAIL "Error " OSAL_EC_FS " at cachedFileProfileResidentPageSequences...\n", OSAL_EC));
             goto error;
         }
 
         // eviction is running stop
         if (ws->eviction_ignore_evaluation_ && __atomic_load_n(&eviction_running, __ATOMIC_RELAXED) == 1)
         {
-            DEBUG_PRINT((DEBUG WARNING "Eviction occured during reevaluation, ignoring result...\n"));
+            DEBUG_PRINT((DEBUG WS_TAG WARNING "Eviction occured during reevaluation, ignoring result...\n"));
             goto error;
         }
 
-        // move to file to tmp non resident file list
+        // move to right list
         if (current_cached_file.resident_memory_ == 0)
         {
             listAppendBack(&ws->non_resident_files_[inactive_list_set], &current_cached_file);
@@ -2532,7 +2532,7 @@ int reevaluateWorkingSetList(List *cached_file_list, Attack *attack, size_t inac
         else
         {
             listAppendBack(&ws->resident_files_[inactive_list_set], &current_cached_file);
-            ws->tmp_mem_in_ws_[inactive_list_set] += current_cached_file.resident_memory_;
+            ws->mem_in_ws_[inactive_list_set] += current_cached_file.resident_memory_;
         }
 
         current_cached_file_node = next_node;
@@ -2558,25 +2558,26 @@ int spawnSuppressThreads(Attack *attack)
     // prepare suppress set
     if(prepareSuppressSet(attack) != 0)
     {
+        DEBUG_PRINT((DEBUG SS_TAG FAIL "Error " OSAL_EC_FS " at prepareSuppressSet...\n", OSAL_EC));
         return -1;
     }
 
-    PageAccessThreadESData thread_data = {
+    PageAccessThreadSSData thread_data = {
         .running_ = 1,
-        .ss_ = &attack->supress_set_;
-        .sleep_time_ = attack->supress_set_.access_sleep_time_;
-    }
+        .ss_ = &attack->suppress_set_,
+        .sleep_time_ = attack->suppress_set_.access_sleep_time_
+    };
     // readahead surpressing threads for target
-    for (size_t t = 0; t < attack->ss_thread_count_; t++)
+    for (size_t t = 0; t < attack->suppress_set_.access_thread_count_; t++)
     {
-        if (pthread_create(&thread_data->tid_, NULL, suppressThread, (void *)&attack->suppress_set_) != 0)
+        if (pthread_create(&thread_data.tid_, NULL, suppressThread, (void *) &thread_data) != 0)
         {
-            DEBUG_PRINT((DEBUG FAIL "Error " OSAL_EC_FS " at pthread_create...\n", OSAL_EC));
+            DEBUG_PRINT((DEBUG SS_TAG FAIL "Error " OSAL_EC_FS " at pthread_create...\n", OSAL_EC));
             goto error;
         }
-        if (!dynArrayAppend(&attack->supress_set_.access_threads_, &thread_data))
+        if (!dynArrayAppend(&attack->suppress_set_.access_threads_, &thread_data))
         {
-            DEBUG_PRINT((DEBUG FAIL "Error " OSAL_EC_FS " at dynArrayAppend...\n", OSAL_EC));
+            DEBUG_PRINT((DEBUG SS_TAG FAIL "Error " OSAL_EC_FS " at dynArrayAppend...\n", OSAL_EC));
             goto error;
         }
     }
@@ -2585,7 +2586,7 @@ int spawnSuppressThreads(Attack *attack)
 
 error:
     
-    dynArrayDestroy(&attack->supress_set_.access_threads_, closePageAccessThreadSSData);
+    dynArrayDestroy(&attack->suppress_set_.access_threads_, closePageAccessThreadSSData);
     return -1;
 }
 
@@ -2595,7 +2596,8 @@ int prepareSuppressSet(Attack *attack)
     // these are kept active in an attempt to avoid a readahead of the target
     if(hashMapForEach(&attack->targets_, targetsHmPrepareSuppressSet, attack) != HM_FE_OK)
     {
-        dynArrayDestroy(attack->supress_set_.suppress_set_, closeTargetFileTargetsOnly);
+        DEBUG_PRINT((DEBUG SS_TAG FAIL "Error " OSAL_EC_FS " at hashMapForEach...\n", OSAL_EC));
+        dynArrayDestroy(&attack->suppress_set_.suppress_set_, closeTargetFileTargetsOnly);
         return -1;
     }
 
@@ -2605,13 +2607,13 @@ int targetsHmPrepareSuppressSet(void *data, void *arg)
 {
     Attack *attack = arg;
     TargetFile *target_file = data;
-    TargetPage *target_pages = target_file->target_pages_.data_;
     // copy of target file
     TargetFile target_file_suppress = *target_file;
 
     // if whole file is target we can not suppress
     if(target_file->is_target_file_) 
     {
+        DEBUG_PRINT((DEBUG SS_TAG INFO "Whole file is a target, skipping...\n"));
         return HM_FE_OK;
     }
 
@@ -2626,7 +2628,7 @@ int targetsHmPrepareSuppressSet(void *data, void *arg)
         target_file->mapping_.pages_cache_status_ = malloc(target_file_suppress.mapping_.size_pages_ * sizeof(unsigned char));
         if(target_file->mapping_.pages_cache_status_ == NULL)
         {
-            DEBUG_PRINT((DEBUG FAIL "Error " OSAL_EC_FS " at malloc...\n", OSAL_EC));
+            DEBUG_PRINT((DEBUG SS_TAG FAIL "Error " OSAL_EC_FS " at malloc...\n", OSAL_EC));
             goto error;
         }
     }
@@ -2637,28 +2639,28 @@ int targetsHmPrepareSuppressSet(void *data, void *arg)
     if(target_file->has_target_pages_)
     {
         targetPagesCacheStatusReadaheadTriggerPagesSet(&target_file->target_pages_, 
-            &target_file->mapping_, attack->ra_window_size_pages_, 0);
+            &target_file->mapping_, attack->ra_window_size_pages_, 1);
         targetPagesCacheStatusSet(&target_file->target_pages_, 
             &target_file->mapping_, 0);
     }
     else if(target_file->has_target_sequence_)
     {
         targetSequenceCacheStatusReadaheadTriggerPagesSet(&target_file->target_sequence_, 
-            &target_file->mapping_, attack->ra_window_size_pages_, 0);
+            &target_file->mapping_, attack->ra_window_size_pages_, 1);
         targetSequenceCacheStatusSet(&target_file->target_sequence_, 
             &target_file->mapping_, 0);
     }
     
     // add page sequences
-    if(fileMappingProfileResidentPageSequences(target_file->mapping_, 1, &target_file_suppress.target_sequences_) == -1)
+    if(fileMappingProfileResidentPageSequences(&target_file->mapping_, 1, &target_file_suppress.target_sequences_) == -1)
     {
-        DEBUG_PRINT((DEBUG FAIL "Error " OSAL_EC_FS " at fileMappingProfileResidentPageSequences...\n", OSAL_EC));
+        DEBUG_PRINT((DEBUG SS_TAG FAIL "Error " OSAL_EC_FS " at fileMappingProfileResidentPageSequences...\n", OSAL_EC));
         goto error;
     }
 
     if(dynArrayAppend(&attack->suppress_set_.suppress_set_, &target_file_suppress) == NULL) 
     {
-        DEBUG_PRINT((DEBUG FAIL "Error " OSAL_EC_FS " at dynArrayAppend...\n", OSAL_EC));
+        DEBUG_PRINT((DEBUG SS_TAG FAIL "Error " OSAL_EC_FS " at dynArrayAppend...\n", OSAL_EC));
         goto error;
     }
 
@@ -2676,7 +2678,7 @@ void activateSS(DynArray *suppress_set, int use_file_api)
     volatile uint8_t tmp;
     (void) tmp;
     
-    for(size_t t = 0; t < suppress_set.size_; t++)
+    for(size_t t = 0; t < suppress_set->size_; t++)
     {
         current_target_file = dynArrayGet(suppress_set, t);
 
@@ -2688,8 +2690,8 @@ void activateSS(DynArray *suppress_set, int use_file_api)
             for (size_t p = page_sequences[s].offset_; p < page_sequences[s].offset_ +
                 page_sequences[s].length_; p++)
             {
-                //DEBUG_PRINT((DEBUG INFO "Accessing offset %zu, %zu length\n", resident_page_sequences[s].offset_, 
-                //    resident_page_sequences[s].length_);
+                DEBUG_PRINT((DEBUG SS_TAG WORKER_TAG INFO "Accessing offset %zu, %zu length...\n", 
+                    pthread_self(), page_sequences[s].offset_, page_sequences[s].length_));
                 // access page
                 if(use_file_api) 
                 {
@@ -2698,7 +2700,7 @@ void activateSS(DynArray *suppress_set, int use_file_api)
                         pread(current_target_file->mapping_.internal_.fd_, (void *)&tmp, 1, p * PAGE_SIZE) != 1 )
                     {
                         // in case of error just print warnings and access whole ES
-                        DEBUG_PRINT((DEBUG WARNING "Error " OSAL_EC_FS " at pread...\n", OSAL_EC));
+                        DEBUG_PRINT((DEBUG SS_TAG WORKER_TAG WARNING "Error " OSAL_EC_FS " at pread...\n", OSAL_EC));
                     }
 #elif defined(_WIN32)
                     // TODO implement
@@ -2716,12 +2718,12 @@ void activateSS(DynArray *suppress_set, int use_file_api)
 void *suppressThread(void *arg)
 {
     PageAccessThreadSSData *thread_data = arg;
-    AttackSuppressSet *ss = arg->ss_;
+    AttackSuppressSet *ss = thread_data->ss_;
 
     while (__atomic_load_n(&thread_data->running_, __ATOMIC_RELAXED))
     {
         activateSS(&ss->suppress_set_, ss->use_file_api_);
-        nanosleep(&thread_data->access_sleep_time_, NULL);
+        nanosleep(&thread_data->sleep_time_, NULL);
     }
 
     return NULL;

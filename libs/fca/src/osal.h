@@ -6,6 +6,7 @@
     #include <semaphore.h>
     #include <signal.h>
     #include <errno.h>
+    #include <linux/limits.h>
 
 
     #define OSAL_MAX_PATH_LEN PATH_MAX
@@ -24,7 +25,7 @@
 
     static inline char* osal_fullpath(char *rel_path, char *abs_path) 
     {
-        return realpath(rel_path, abs_path, PATH_MAX);
+        return realpath(rel_path, abs_path);
     }
 #elif defined(_WIN32)
     #include "windows.h"
