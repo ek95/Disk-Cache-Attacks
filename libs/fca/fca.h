@@ -115,6 +115,7 @@ typedef struct _AttackEvictionSet_
 typedef struct _PageAccessThreadESData_
 {
     pthread_t tid_;
+    int running_;
     Attack *attack_;
     size_t access_offset_;
     size_t access_len_;
