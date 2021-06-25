@@ -206,6 +206,8 @@ typedef struct _Attack_
     uint64_t mlock_self_ : 1;
     uint64_t unused_ : 59; // align to 8 byte
 
+    int fc_state_source_;
+
     AttackEvictionSet eviction_set_;
     AttackBlockingSet blocking_set_;
     AttackWorkingSet working_set_;

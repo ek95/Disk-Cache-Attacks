@@ -51,15 +51,16 @@ int checkDynArray(DynArray *array, int *values, size_t values_count)
     return 0;
 }
 
-void popCB(void *data, void *arg)
+int popCB(void *data, void *arg)
 {
     if(*((int *) data) != (ssize_t) arg)
     {
         error = 1;
     }
+    return 0;
 }
 
-void destroyTestNumbers3CB(void *data)
+int destroyTestNumbers3CB(void *data)
 {
     static size_t i = 0;
 
@@ -69,6 +70,7 @@ void destroyTestNumbers3CB(void *data)
     }
 
     i++;
+    return 0;
 }
 
 

@@ -130,7 +130,6 @@ int mapFile(FileMapping *file_mapping, const char *file_path, int file_flags, in
   {
     goto error;
   }
-
   // empty files are not supported
   if(file_stat.st_size == 0) 
   {
@@ -516,7 +515,6 @@ int mapFile(FileMapping *file_mapping, const char *file_path, int file_flags, in
     SetLastError();
     goto error;
   }
-
   // empty files are not supported
   if(file_size.QuadPart == 0) 
   {

@@ -12,8 +12,8 @@ typedef struct _DynArray_
     size_t elem_size_;
 } DynArray;
 
-typedef void (*DynArrayDataCallbackArgFn)(void *addr, void *arg);
-typedef void (*DynArrayDataCallbackFn)(void *addr);
+typedef int (*DynArrayDataCallbackArgFn)(void *addr, void *arg);
+typedef int (*DynArrayDataCallbackFn)(void *addr);
 
 void *dynArrayInit(DynArray *array, size_t elem_size, size_t init_cap);
 void *dynArrayReserve(DynArray *array, size_t new_cap);
