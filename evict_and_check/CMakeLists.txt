@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.10)
 
 project(ev_chk C)
 
-set(CMAKE_C_STANDARD 99)
+set(CMAKE_C_STANDARD 11)
 
 # release flags 
 set(CMAKE_C_FLAGS_RELEASE "-O3 -Wall -Wunused -Wpedantic")
@@ -29,14 +29,17 @@ enable_testing()
 # external libs
 include_directories(../libs/cmdline/src)
 add_subdirectory(../libs/cmdline lib/cmdline)
-include_directories(../libs/dynarray/src)
-add_subdirectory(../libs/dynarray lib/dynarray)
-include_directories(../libs/list/src)
-add_subdirectory(../libs/list lib/list)
-include_directories(../libs/pageflags/src)
-add_subdirectory(../libs/pageflags lib/pageflags)
+include_directories(../libs/fca/src)
+add_subdirectory(../libs/fca lib/fca)
 include_directories(../libs/filemap/src)
-add_subdirectory(../libs/filemap lib/filemap)
+#add_subdirectory(../libs/filemap lib/filemap)
+include_directories(../libs/hashmap/src)
+#add_subdirectory(../libs/hashmap lib/hashmap)
+include_directories(../libs/dynarray/src)
+#add_subdirectory(../libs/dynarray lib/dynarray)
+include_directories(../libs/list/src)
+#add_subdirectory(../libs/list lib/list)
+
 
 # main project
 add_subdirectory(src)

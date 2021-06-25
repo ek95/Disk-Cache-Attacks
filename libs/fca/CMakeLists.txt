@@ -33,6 +33,8 @@ add_subdirectory(../hashmap lib/hashmap)
 include_directories(../filemap/src)
 add_subdirectory(../filemap lib/filemap)
 include_directories(../debug/src)
+#add_subdirectory(../tsc_bench lib/tsc_bench)
+include_directories(../tsc_bench/src)
 
 # enable ctest
 enable_testing()

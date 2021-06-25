@@ -1,8 +1,8 @@
 #ifndef _FCA_H_
 #define _FCA_H_
 
-#define _GNU_SOURCE
-#define _DEFAULT_SOURCE
+#define _GNU_SOURCE 1
+#define _DEFAULT_SOURCE 1
 
 /*-----------------------------------------------------------------------------
  * INCLUDES
@@ -48,6 +48,7 @@ typedef struct _TargetPage_
     uint64_t no_eviction_ : 1;
     uint64_t unused_: 63;
     size_t offset_;
+    size_t last_sample_time_;
 } TargetPage;
 
 typedef struct _PageSequence_
@@ -58,6 +59,7 @@ typedef struct _PageSequence_
 
 typedef struct _TargetFile_ 
 {
+    char *file_path_abs_;
     union 
     {
         struct 
@@ -77,6 +79,8 @@ typedef struct _TargetFile_
         PageSequence target_sequence_;
         DynArray target_sequences_;
     };
+    uint8_t *last_sample_fc_status_;
+    size_t last_sample_time_;
 } TargetFile;
 
 typedef struct _FillUpProcess_
@@ -102,18 +106,18 @@ typedef struct _AttackEvictionSet_
     char *eviction_file_path_;
     char *eviction_file_path_abs_;
     FileMapping mapping_;
-    size_t initialise_samples_;
-    size_t initialise_max_runs_;  
     size_t targets_check_all_x_bytes_;
     size_t ws_access_all_x_bytes_;
     size_t ss_access_all_x_bytes_;
     size_t prefetch_es_bytes_;
     // only used if ES_USE_THREADS is defined
     size_t access_thread_count_;
-    size_t access_threads_per_pu_;
     DynArray access_threads_;
     sem_t worker_start_sem_;
     sem_t worker_join_sem_;
+    // public statistics
+    size_t last_eviction_time_ns_;
+    ssize_t last_eviction_accessed_memory_bytes_;
 } AttackEvictionSet;
 
 typedef struct _PageAccessThreadESData_
@@ -146,7 +150,7 @@ typedef struct _AttackWorkingSet_
 {
     uint64_t evaluation_ : 1;
     uint64_t eviction_ignore_evaluation_ : 1;
-    uint64_t access_use_file_api_ : 1;
+    uint64_t use_file_api_ : 1;
     uint64_t unused_ : 61; // align to 8bytes
 
     pthread_t manager_thread_;
@@ -203,7 +207,6 @@ typedef struct _Attack_
     uint64_t use_attack_bs_ : 1;
     uint64_t use_attack_ws_ : 1;
     uint64_t use_attack_ss_ : 1;
-    uint64_t mlock_self_ : 1;
     uint64_t unused_ : 59; // align to 8 byte
 
     int fc_state_source_;
@@ -214,7 +217,7 @@ typedef struct _Attack_
 
     HashMap targets_;
 
-    size_t ra_window_size_pages_;
+    size_t fa_window_size_pages_;
     AttackSuppressSet suppress_set_;
 } Attack;
 
@@ -271,53 +274,16 @@ int fcaAddTargetsFromFile(Attack *attack, char *targets_config_file_path);
 int fcaStart(Attack *attack, int flags);
 
 /* Target state sample function.
- * Selection depends on the type of target you use.
-
- * In case of target pages use this function.
+ * Sampling method depends on the settings of the TargetFile object.
  * 
  * The results of the sampling can be found by iterating over the
- * attack.targets_ hashmap in the mapping_.pages_cache_status_ vector.
+ * attack.targets_ hashmap in the last_sample_fc_status_ vector.
  *
  * @param[in]   attack  pointer to the attack structure
  * @return      -1 on error, 0 otherwise
  * 
  */ 
-int fcaTargetPagesSampleFlushOnce(Attack *attack);
-
-/* Target state sample function.
- * Selection depends on the type of target you use.
-
- * In case of (whole) target files use this function.
- * 
- * The results of the sampling can be found by iterating over the
- * attack.targets_ hashmap in the mapping_.pages_cache_status_ vector.
- *
- * @param[in]   attack  pointer to the attack structure
- * @return      -1 on error, 0 otherwise
- * 
- */ 
-int fcaTargetFilesSampleFlushOnce(Attack *attack);
-
-/* Target state sample function.
- * Selection depends on the type of target you use.
-
- * In case of a target page sequence use this function.
-
- * The target page sequence can be changed by modifying the TargetFile
- * object. Note however that this does not affect the already created
- * working and suppression set. Therefore, increasing the page sequence
- * afterwards will lead to problems. Using a smaller sequence is allowed,
- * but still does not update the working and suppression set 
- * (which could even be wanted in this case).
- * 
- * The results of the sampling can be found by iterating over the
- * attack.targets_ hashmap in the mapping_.pages_cache_status_ vector.
- *
- * @param[in]   attack  pointer to the attack structure
- * @return      -1 on error, 0 otherwise
- * 
- */ 
-int fcaTargetFilePageSequence(Attack *attack, TargetFile *target_file);
+int fcaTargetsSampleFlushOnce(Attack *attack);
 
 /* Stops the attack.
  * Exits every thread, frees all resources and hands back control.

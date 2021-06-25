@@ -28,6 +28,7 @@
 #elif defined(__WIN32)
 #include "windows.h"
 #endif
+#include "tsc_bench.h"
 // NOTE uncomment this to enable debug outputs
 #define _DEBUG_
 #include "debug.h"
@@ -93,19 +94,10 @@ static int closePageAccessThreadWSData(void *arg);
 static int initAttack(Attack *attack);
 static void freeAttack(Attack *attack);
 
-static int targetsHmPagesCacheStatusCB(void *data, void *arg);
-static int targetPagesEvicted(void *arg);
-static int targetsHmPagesShouldEvictCB(void *data, void *arg);
-static int targetPagesSampleShouldEvict(Attack *attack);
-
-static int targetsHmFilesCacheStatusCB(void *data, void *arg);
-static int targetFilesEvicted(void *arg);
-static int targetsHmFilesShouldEvictCB(void *data, void *arg);
-static int targetFilesSampleShouldEvict(Attack *attack);
-
-static int targetFilePageSequenceCacheStatus(TargetFile *target_file);
-static int targetFilePageSequenceEvicted(void *arg);
-static int targetFilePageSequenceSampleShouldEvict(TargetFile *target_file);
+static int targetsHmCacheStatusCB(void *data, void *arg);
+static int targetsEvicted(void *arg);
+static int targetsHmShouldEvictCB(void *data, void *arg);
+static int targetsSampleShouldEvict(Attack *attack);
 
 static int createEvictionSet(Attack *attack);
 static ssize_t evictTargets(Attack *attack, TargetsEvictedFn targets_evicted_fn, void *target_evicted_arg_ptr);
@@ -131,16 +123,16 @@ static int profileAttackWorkingSetFolder(Attack *attack, char *folder);
 #endif
 static int initialProfileResidentPagesFile(Attack *attack, char *file_path);
 static void targetPagesCacheStatusReadaheadTriggerPagesSet(DynArray *target_pages, FileMapping *target_file_mapping,
-                                                           size_t ra_window_size_pages, uint8_t val);
+                                                           size_t fa_window_size_pages, uint8_t val);
 static void targetPageCacheStatusReadaheadTriggerPagesSet(size_t offset, FileMapping *target_file_mapping,
-                                                          size_t ra_window_size_pages, uint8_t val);
+                                                          size_t fa_window_size_pages, uint8_t val);
 static void targetPagesCacheStatusSet(DynArray *target_pages, FileMapping *target_file_mapping, uint8_t val);
 static void targetSequenceCacheStatusReadaheadTriggerPagesSet(PageSequence *target_sequence, FileMapping *target_file_mapping,
-                                                              size_t ra_window_size_pages, uint8_t val);
+                                                              size_t fa_window_size_pages, uint8_t val);
 static void targetPageCacheStatusReadaheadTriggerPagesBackSet(size_t offset, FileMapping *target_file_mapping,
-                                                              size_t ra_window_size_pages, uint8_t val);
+                                                              size_t fa_window_size_pages, uint8_t val);
 static void targetPageCacheStatusReadaheadTriggerPagesFrontSet(size_t offset, FileMapping *target_file_mapping,
-                                                               size_t ra_window_size_pages, uint8_t val);
+                                                               size_t fa_window_size_pages, uint8_t val);
 static void targetSequenceCacheStatusSet(PageSequence *target_sequence, FileMapping *target_file_mapping, uint8_t val);
 static int cachedFileProfileResidentPageSequences(CachedFile *current_cached_file, size_t ps_add_threshold);
 static ssize_t fileMappingProfileResidentPageSequences(FileMapping *mapping, size_t ps_add_threshold,
@@ -193,6 +185,8 @@ int closeTargetFile(void *arg)
     TargetFile *target_file = arg;
     closeFileMapping(&target_file->mapping_);
     closeTargetFileTargetsOnly(target_file);
+    free(target_file->file_path_abs_);
+    free(target_file->last_sample_fc_status_);
     return 0;
 }
 
@@ -259,7 +253,7 @@ int initAttackEvictionSet(AttackEvictionSet *es)
 {
     memset(es, 0, sizeof(AttackEvictionSet));
     initFileMapping(&es->mapping_);
-    // only used if ES_USE_THREADS is defined
+    // only used if access threads are used
     if (sem_init(&es->worker_start_sem_, 0, 0) != 0)
     {
         return -1;
@@ -268,10 +262,8 @@ int initAttackEvictionSet(AttackEvictionSet *es)
     {
         return -1;
     }
-    if (!dynArrayInit(&es->access_threads_, sizeof(PageAccessThreadESData), 0))
-    {
-        return -1;
-    }
+    // can not fail if no space is reserved
+    dynArrayInit(&es->access_threads_, sizeof(PageAccessThreadESData), 0);
 
     return 0;
 }
@@ -544,6 +536,9 @@ int fcaStart(Attack *attack, int flags)
 {
     int ret = 0;
 
+    // set attack running
+    __atomic_store_n(&running, 1, __ATOMIC_RELAXED);
+
     // only windows
     // special handling of blocking, working and suppress set
 #ifdef _WIN32
@@ -562,6 +557,12 @@ int fcaStart(Attack *attack, int flags)
     {
     }
 #endif
+    // needed for accurate time measurments
+    if (tsc_bench_init(0) != 0) 
+    {
+        DEBUG_PRINT((DEBUG FAIL "Error " OSAL_EC_FS " at tsc_bench_init...\n", OSAL_EC));
+        goto error;   
+    }
 
     // change file cache state sample function
     // must be done here so that it is effective before profiling working set
@@ -569,19 +570,6 @@ int fcaStart(Attack *attack, int flags)
     {
         DEBUG_PRINT((DEBUG FAIL "Error " OSAL_EC_FS " at changeFcStateSource...\n", OSAL_EC));
         goto error;
-    }
-
-    // profile system working set if wanted
-    // done before any memory is blocked so that the whole current working set can be profiled
-    if (attack->use_attack_ws_)
-    {
-        DEBUG_PRINT((DEBUG WS_TAG INFO "Profiling working set...\n"));
-        if (profileAttackWorkingSet(attack) != 0)
-        {
-            DEBUG_PRINT((DEBUG WS_TAG FAIL "Error " OSAL_EC_FS " at profileAttackWorkingSet...\n", OSAL_EC));
-            goto error;
-        }
-        DEBUG_PRINT((DEBUG WS_TAG OK "Profiling working set...\n"));
     }
 
     // create + map attack eviction set
@@ -607,6 +595,39 @@ int fcaStart(Attack *attack, int flags)
         DEBUG_PRINT((DEBUG ES_TAG OK "Spawning eviction threads...\n"));
     }
 
+    // start manager thread for blocking set
+    // done last as this blocks memory and might affect performance
+    if (attack->use_attack_bs_)
+    {
+        DEBUG_PRINT((DEBUG BS_TAG INFO "Spawning blocking set manager thread...\n"));
+        if (pthread_create(&attack->blocking_set_.manager_thread_, NULL, bsManagerThread, &attack->blocking_set_) != 0)
+        {
+            DEBUG_PRINT((DEBUG BS_TAG FAIL "Error " OSAL_EC_FS " at pthread_create...\n", OSAL_EC));
+            goto error;
+        }
+        else
+        {
+            // wait till blocking set is initialized
+            sem_wait(&attack->blocking_set_.initialized_sem_);
+        }
+        DEBUG_PRINT((DEBUG BS_TAG OK "Spawning blocking set manager thread...\n"));
+    }
+
+    // profile system working set if wanted
+    if (attack->use_attack_ws_)
+    {
+        DEBUG_PRINT((DEBUG WS_TAG INFO "Profiling working set...\n"));
+        if (profileAttackWorkingSet(attack) != 0)
+        {
+            DEBUG_PRINT((DEBUG WS_TAG FAIL "Error " OSAL_EC_FS " at profileAttackWorkingSet...\n", OSAL_EC));
+            goto error;
+        }
+        DEBUG_PRINT((DEBUG WS_TAG OK "Profiling working set...\n"));
+        DEBUG_PRINT((DEBUG WS_TAG INFO "Initial working set now consists of %zu files (%zu bytes mapped).\n",
+                    attack->working_set_.resident_files_[attack->working_set_.up_to_date_list_set_].count_,
+                    attack->working_set_.mem_in_ws_[attack->working_set_.up_to_date_list_set_]));
+    }
+
     // if wanted spawn readahead suppress threads
     if (attack->use_attack_ss_)
     {
@@ -628,24 +649,6 @@ int fcaStart(Attack *attack, int flags)
             DEBUG_PRINT((DEBUG WS_TAG FAIL "Error " OSAL_EC_FS " at pthread_create...\n", OSAL_EC));
         }
         DEBUG_PRINT((DEBUG WS_TAG OK "Spawning working set manager thread...\n"));
-    }
-
-    // start manager thread for blocking set
-    // done last as this blocks memory and might affect performance
-    if (attack->use_attack_bs_)
-    {
-        DEBUG_PRINT((DEBUG BS_TAG INFO "Spawning blocking set manager thread...\n"));
-        if (pthread_create(&attack->blocking_set_.manager_thread_, NULL, bsManagerThread, &attack->blocking_set_) != 0)
-        {
-            DEBUG_PRINT((DEBUG BS_TAG FAIL "Error " OSAL_EC_FS " at pthread_create...\n", OSAL_EC));
-            goto error;
-        }
-        else
-        {
-            // wait till blocking set is initialized
-            sem_wait(&attack->blocking_set_.initialized_sem_);
-        }
-        DEBUG_PRINT((DEBUG BS_TAG OK "Spawning blocking set manager thread...\n"));
     }
 
 #ifdef _WIN32
@@ -676,17 +679,33 @@ TargetFile *fcaAddTargetFile(Attack *attack, char *target_file_path)
         return NULL;
     }
 
-    // map target file and add to hash map
     initTargetFile(&target_file, FCA_TARGET_TYPE_FILE);
+    // save absolute target file path
+    target_file.file_path_abs_ = strdup(target_file_path_abs);
+    if(target_file.file_path_abs_ == NULL) 
+    {
+        DEBUG_PRINT((DEBUG FAIL "Error " OSAL_EC_FS " at strdup...\n", OSAL_EC));
+        goto error;
+    }
+
+    // map target file and add to hash map
     if (mapFile(&target_file.mapping_, target_file_path_abs, FILE_ACCESS_READ | FILE_NOATIME,
                 MAPPING_SHARED | MAPPING_ACCESS_READ) != 0)
     {
-        closeTargetFile(&target_file);
-        return NULL;
+        DEBUG_PRINT((DEBUG FAIL "Error " OSAL_EC_FS " at mapFile...\n", OSAL_EC));
+        goto error;
     }
+    // copy of file status for sampling
+    target_file.last_sample_fc_status_ = malloc(target_file.mapping_.size_pages_ * sizeof(uint8_t));
+    if(target_file.last_sample_fc_status_ == NULL) 
+    {
+        DEBUG_PRINT((DEBUG FAIL "Error " OSAL_EC_FS " at malloc...\n", OSAL_EC));
+        goto error;     
+    }
+
     // advise random access to avoid readahead (we dont want to change the working set)
     // if it does not work ignore
-    if (adviseFileUsage(&target_file.mapping_, 0, 0, FILE_USAGE_RANDOM) != 0)
+    if (adviseFileUsage(&target_file.mapping_, 0, 0, USAGE_RANDOM) != 0)
     {
         DEBUG_PRINT((DEBUG WARNING "Error " OSAL_EC_FS " at adviseFileUsage...\n", OSAL_EC));
     }
@@ -694,11 +713,15 @@ TargetFile *fcaAddTargetFile(Attack *attack, char *target_file_path)
                                     &target_file);
     if (target_file_ptr == NULL)
     {
-        closeTargetFile(&target_file);
-        return NULL;
+        DEBUG_PRINT((DEBUG FAIL "Error " OSAL_EC_FS " at hashMapInsert...\n", OSAL_EC));
+        goto error;
     }
 
     return target_file_ptr;
+
+error:
+    closeTargetFile(&target_file);
+    return NULL;
 }
 
 int fcaAddTargetsFromFile(Attack *attack, char *targets_config_file_path)
@@ -736,6 +759,7 @@ int fcaAddTargetsFromFile(Attack *attack, char *targets_config_file_path)
                 goto error;
             }
         }
+        line_length = strlen(line_buffer);
 
         // check for new line character (must be in array)
         // and remove it
@@ -804,6 +828,14 @@ int fcaAddTargetsFromFile(Attack *attack, char *targets_config_file_path)
                 DEBUG_PRINT((DEBUG FAIL "Error " OSAL_EC_FS " at osal_fullpath...\n", OSAL_EC));
                 goto error;
             }
+            // save absolute target file path
+            current_target_file.file_path_abs_ = strdup(current_target_file_path_abs);
+            if(current_target_file.file_path_abs_ == NULL) 
+            {
+                DEBUG_PRINT((DEBUG FAIL "Error " OSAL_EC_FS " at strdup...\n", OSAL_EC));
+                goto error;
+            }
+
             // map target file
             if (mapFile(&current_target_file.mapping_, current_target_file_path_abs, FILE_ACCESS_READ | FILE_NOATIME,
                         MAPPING_ACCESS_READ | MAPPING_SHARED) != 0)
@@ -811,9 +843,17 @@ int fcaAddTargetsFromFile(Attack *attack, char *targets_config_file_path)
                 DEBUG_PRINT((DEBUG FAIL "Error " OSAL_EC_FS " at mapFile...\n", OSAL_EC));
                 goto error;
             }
+            // copy of file status for sampling
+            current_target_file.last_sample_fc_status_ = malloc(current_target_file.mapping_.size_pages_ * sizeof(uint8_t));
+            if(current_target_file.last_sample_fc_status_ == NULL) 
+            {
+                DEBUG_PRINT((DEBUG FAIL "Error " OSAL_EC_FS " at malloc...\n", OSAL_EC));
+                goto error;     
+            }
+
             // advise random access to avoid readahead (we dont want to change the working set)
             // if it does not work ignore
-            if (adviseFileUsage(&current_target_file.mapping_, 0, 0, FILE_USAGE_RANDOM) != 0)
+            if (adviseFileUsage(&current_target_file.mapping_, 0, 0, USAGE_RANDOM) != 0)
             {
                 DEBUG_PRINT((DEBUG WARNING "Error " OSAL_EC_FS " at adviseFileUsage...\n", OSAL_EC));
             }
@@ -838,15 +878,15 @@ cleanup:
 }
 
 // for single page hit tracing
-int fcaTargetPagesSampleFlushOnce(Attack *attack)
+int fcaTargetsSampleFlushOnce(Attack *attack)
 {
     int ret = 0;
     ssize_t accessed_memory = 0;
 
-    ret = targetPagesSampleShouldEvict(attack);
+    ret = targetsSampleShouldEvict(attack);
     if (ret == -1)
     {
-        DEBUG_PRINT((DEBUG FAIL "Error " OSAL_EC_FS " at targetPagesSampleShouldEvict...\n", OSAL_EC));
+        DEBUG_PRINT((DEBUG FAIL "Error " OSAL_EC_FS " at targetsSampleShouldEvict...\n", OSAL_EC));
         return -1;
     }
     // nothing to evict
@@ -855,7 +895,7 @@ int fcaTargetPagesSampleFlushOnce(Attack *attack)
         return 0;
     }
     // we should evict
-    accessed_memory = evictTargets(attack, targetPagesEvicted, attack);
+    accessed_memory = evictTargets(attack, targetsEvicted, attack);
     if (accessed_memory < 0)
     {
         DEBUG_PRINT((DEBUG FAIL "Error " OSAL_EC_FS " at evictTargets...\n", OSAL_EC));
@@ -867,80 +907,7 @@ int fcaTargetPagesSampleFlushOnce(Attack *attack)
         return -1;
     }
 
-    return 0;
-}
-
-// for profiling
-int fcaTargetFilesSampleFlushOnce(Attack *attack)
-{
-    int ret = 0;
-    ssize_t accessed_memory = 0;
-
-    ret = targetFilesSampleShouldEvict(attack);
-    if (ret == -1)
-    {
-        DEBUG_PRINT((DEBUG FAIL "Error " OSAL_EC_FS " at targetFilesSampleShouldEvict...\n", OSAL_EC));
-        return -1;
-    }
-    // nothing to evict
-    else if (ret == 0)
-    {
-        return 0;
-    }
-    // we should evict
-    accessed_memory = evictTargets(attack, targetFilesEvicted, attack);
-    if (accessed_memory < 0)
-    {
-        DEBUG_PRINT((DEBUG FAIL "Error " OSAL_EC_FS " at evictTargets...\n", OSAL_EC));
-        return -1;
-    }
-    else if (accessed_memory == 0)
-    {
-        DEBUG_PRINT((DEBUG FAIL "Error: Eviction was not possible!\n"));
-        return -1;
-    }
-
-    return 0;
-}
-
-// for covert channel
-int fcaTargetFilePageSequenceSampleFlushOnce(Attack *attack, TargetFile *target_file)
-{
-    int ret = 0;
-    ssize_t accessed_memory = 0;
-
-    // has to have a target sequence, else it is invalid
-    if (target_file->has_target_sequence_ != 1)
-    {
-        DEBUG_PRINT((DEBUG FAIL "Error: Contains no target page sequence...\n"));
-        return -1;
-    }
-
-    ret = targetFilePageSequenceSampleShouldEvict(target_file);
-    if (ret == -1)
-    {
-        DEBUG_PRINT((DEBUG FAIL "Error " OSAL_EC_FS " at targetFilePageSequenceSampleShouldEvict...\n", OSAL_EC));
-        return -1;
-    }
-    // nothing to evict
-    else if (ret == 0)
-    {
-        return 0;
-    }
-    // we should evict
-    accessed_memory = evictTargets(attack, targetFilePageSequenceEvicted, target_file);
-    if (accessed_memory < 0)
-    {
-        DEBUG_PRINT((DEBUG FAIL "Error " OSAL_EC_FS " at evictTargets...\n", OSAL_EC));
-        return -1;
-    }
-    else if (accessed_memory == 0)
-    {
-        DEBUG_PRINT((DEBUG FAIL "Error: Eviction was not possible!\n"));
-        return -1;
-    }
-
-    return 0;
+    return 1;
 }
 
 // teardown
@@ -955,38 +922,95 @@ void fcaExit(Attack *attack)
 /*-----------------------------------------------------------------------------
  * HELPER FUNCTIONS FOR PUBLIC ATTACK FUNCTIONS
  */
-
-// for single page hit tracing
-int targetsHmPagesCacheStatusCB(void *data, void *arg)
+int targetsHmCacheStatusCB(void *data, void *arg)
 {
-    uint64_t stop_if_cached = (uint64_t)arg;
+    uint64_t evict_mode = (uint64_t)arg;
     TargetFile *target_file = data;
-    TargetPage *target_pages = target_file->target_pages_.data_;
 
-    for (size_t i = 0; i < target_file->target_pages_.size_; i++)
+    if(target_file->has_target_pages_)
     {
-        if (getCacheStatusFileRange(&target_file->mapping_, target_pages[i].offset_ * PAGE_SIZE, PAGE_SIZE) != 0)
+        TargetPage *target_pages = target_file->target_pages_.data_;
+        for (size_t i = 0; i < target_file->target_pages_.size_; i++)
         {
-            DEBUG_PRINT((DEBUG FAIL "Error " OSAL_EC_FS " at getCacheStatusFileRange...\n", OSAL_EC));
+            // save sample time + sample
+            if(evict_mode == 0)
+            {
+                target_pages[i].last_sample_time_ = osal_unix_ts_us();
+            }
+            if (getCacheStatusFileRange(&target_file->mapping_, target_pages[i].offset_ * PAGE_SIZE, PAGE_SIZE) != 0)
+            {
+                DEBUG_PRINT((DEBUG FAIL "Error " OSAL_EC_FS " at getCacheStatusFileRange...\n", OSAL_EC));
+                return -1;
+            }
+            // stop if wanted
+            if (evict_mode == 1 &&
+                target_file->mapping_.pages_cache_status_[target_pages[i].offset_] == 1)
+
+            {
+                // page is still in page cache -> stop
+                return HM_FE_BREAK;
+            }
+        }
+    }
+    else if(target_file->has_target_sequence_)
+    {
+        size_t offset_in_pages = target_file->target_sequence_.offset_;
+        size_t length_in_pages = target_file->target_sequence_.length_;
+
+        if(evict_mode == 0)
+        {
+            target_file->last_sample_time_ = osal_unix_ts_us();
+        }
+        if (getCacheStatusFileRange(&target_file->mapping_, offset_in_pages * PAGE_SIZE, length_in_pages * PAGE_SIZE) != 0)
+        {
+            DEBUG_PRINT((DEBUG FAIL "Error " OSAL_EC_FS " at getCacheStatusFile...\n", OSAL_EC));
             return -1;
         }
         // stop if wanted
-        if (stop_if_cached &&
-            target_file->mapping_.pages_cache_status_[target_pages[i].offset_] == 1)
-
+        if (evict_mode == 1 && 
+            getMappingCount(target_file->mapping_.pages_cache_status_ + offset_in_pages, length_in_pages) != 0)
         {
-            // page is still in page cache -> stop
+            // (part of) file is still in page cache -> stop
             return HM_FE_BREAK;
         }
+    }
+    else if(target_file->is_target_file_)
+    {
+        if(evict_mode == 0)
+        {
+            target_file->last_sample_time_ = osal_unix_ts_us();
+        }
+        if (getCacheStatusFile(&target_file->mapping_) != 0)
+        {
+            DEBUG_PRINT((DEBUG FAIL "Error " OSAL_EC_FS " at getCacheStatusFile...\n", OSAL_EC));
+            return -1;
+        }
+        if (evict_mode == 1 &&
+            getMappingCount(target_file->mapping_.pages_cache_status_, target_file->mapping_.size_pages_) != 0)
+        {
+            // (part of) file is still in page cache -> stop
+            return HM_FE_BREAK;
+        }
+    }
+    else 
+    {
+        // TODO FIXME page sequences currently not supported as not needed
+        return -1;
+    }
+
+    // copy fc status
+    if(evict_mode == 0)
+    {
+        memcpy(target_file->last_sample_fc_status_, target_file->mapping_.pages_cache_status_, target_file->mapping_.size_pages_ * sizeof(uint8_t));
     }
 
     return HM_FE_OK;
 }
 
-int targetPagesEvicted(void *arg)
+int targetsEvicted(void *arg)
 {
     Attack *attack = arg;
-    if (hashMapForEach(&attack->targets_, targetsHmPagesCacheStatusCB, (void *)1) == HM_FE_OK)
+    if (hashMapForEach(&attack->targets_, targetsHmCacheStatusCB, (void *) 1) == HM_FE_OK)
     {
         return 1;
     }
@@ -994,146 +1018,62 @@ int targetPagesEvicted(void *arg)
     return 0;
 }
 
-int targetsHmPagesShouldEvictCB(void *data, void *arg)
+int targetsHmShouldEvictCB(void *data, void *arg)
 {
     (void)arg;
     TargetFile *target_file = data;
-    TargetPage *target_pages = target_file->target_pages_.data_;
-
-    for (size_t i = 0; i < target_file->target_pages_.size_; i++)
+    
+    if(target_file->has_target_pages_)
     {
-        // evict if a page is in pc for which eviction should be triggered
-        if (!target_pages[i].no_eviction_ &&
-            target_file->mapping_.pages_cache_status_[target_pages[i].offset_] == 1)
-
+        TargetPage *target_pages = target_file->target_pages_.data_;
+        for (size_t i = 0; i < target_file->target_pages_.size_; i++)
         {
+            // evict if a page is in pc for which eviction should be triggered
+            if (!target_pages[i].no_eviction_ &&
+                target_file->mapping_.pages_cache_status_[target_pages[i].offset_] == 1)
+
+            {
+                return HM_FE_BREAK;
+            }
+        }
+    }
+    else if(target_file->has_target_sequence_)
+    {
+        size_t offset_in_pages = target_file->target_sequence_.offset_;
+        size_t length_in_pages = target_file->target_sequence_.length_;
+
+        if(getMappingCount(target_file->mapping_.pages_cache_status_ + offset_in_pages, length_in_pages) != 0)
+        {
+            // (part of) file is still in page cache -> stop
             return HM_FE_BREAK;
         }
+    }
+    else if(target_file->is_target_file_)
+    {
+        if (getMappingCount(target_file->mapping_.pages_cache_status_, target_file->mapping_.size_pages_) != 0)
+        {
+            // (part of) file is still in page cache -> stop
+            return HM_FE_BREAK;
+        }
+    }
+    else 
+    {
+        // TODO FIXME page sequences currently not supported as not needed
+        return -1;
     }
 
     return HM_FE_OK;
 }
 
-int targetPagesSampleShouldEvict(Attack *attack)
+int targetsSampleShouldEvict(Attack *attack)
 {
     // sample all pages of interest
-    if (hashMapForEach(&attack->targets_, targetsHmPagesCacheStatusCB, 0) != HM_FE_OK)
+    if (hashMapForEach(&attack->targets_, targetsHmCacheStatusCB, 0) != HM_FE_OK)
     {
         return -1;
     }
     // check if eviction is needed
-    if (hashMapForEach(&attack->targets_, targetsHmPagesShouldEvictCB, 0) == HM_FE_BREAK)
-    {
-        return 1;
-    }
-
-    return 0;
-}
-
-// for profiling
-int targetsHmFilesCacheStatusCB(void *data, void *arg)
-{
-    uint64_t stop_if_cached = (uint64_t)arg;
-    TargetFile *target_file = data;
-
-    if (getCacheStatusFile(&target_file->mapping_) != 0)
-    {
-        DEBUG_PRINT((DEBUG FAIL "Error " OSAL_EC_FS " at getCacheStatusFile...\n", OSAL_EC));
-        return -1;
-    }
-    if (stop_if_cached &&
-        getMappingCount(target_file->mapping_.pages_cache_status_, target_file->mapping_.size_pages_) != 0)
-    {
-        // (part of) file is still in page cache -> stop
-        return HM_FE_BREAK;
-    }
-
-    return HM_FE_OK;
-}
-
-int targetFilesEvicted(void *arg)
-{
-    Attack *attack = arg;
-    if (hashMapForEach(&attack->targets_, targetsHmFilesCacheStatusCB, (void *)1) == HM_FE_OK)
-    {
-        return 1;
-    }
-
-    return 0;
-}
-
-int targetsHmFilesShouldEvictCB(void *data, void *arg)
-{
-    (void)arg;
-    TargetFile *target_file = data;
-
-    if (getMappingCount(target_file->mapping_.pages_cache_status_, target_file->mapping_.size_pages_) != 0)
-    {
-        // (part of) file is still in page cache -> stop
-        return HM_FE_BREAK;
-    }
-
-    return HM_FE_OK;
-}
-
-int targetFilesSampleShouldEvict(Attack *attack)
-{
-    // sample all pages of interest
-    if (hashMapForEach(&attack->targets_, targetsHmFilesCacheStatusCB, 0) != HM_FE_OK)
-    {
-        return -1;
-    }
-    // check if eviction is needed
-    if (hashMapForEach(&attack->targets_, targetsHmFilesShouldEvictCB, 0) == HM_FE_BREAK)
-    {
-        return 1;
-    }
-
-    return 0;
-}
-
-// for covert channel
-int targetFilePageSequenceCacheStatus(TargetFile *target_file)
-{
-    size_t offset_in_pages = target_file->target_sequence_.offset_;
-    size_t length_in_pages = target_file->target_sequence_.length_;
-
-    if (getCacheStatusFileRange(&target_file->mapping_, offset_in_pages * PAGE_SIZE, length_in_pages * PAGE_SIZE) != 0)
-    {
-        DEBUG_PRINT((DEBUG FAIL "Error " OSAL_EC_FS " at getCacheStatusFile...\n", OSAL_EC));
-        return -1;
-    }
-    if (getMappingCount(target_file->mapping_.pages_cache_status_ + offset_in_pages, length_in_pages) != 0)
-    {
-        // (part of) file is still in page cache -> return 1
-        return 1;
-    }
-
-    // nothing in page cache
-    return 0;
-}
-
-int targetFilePageSequenceEvicted(void *arg)
-{
-    TargetFile *target_file = arg;
-    if (targetFilePageSequenceCacheStatus(target_file) == 0)
-    {
-        return 1;
-    }
-
-    return 0;
-}
-
-int targetFilePageSequenceSampleShouldEvict(TargetFile *target_file)
-{
-    // sample all pages of interest
-    int ret = targetFilePageSequenceCacheStatus(target_file);
-    if (ret < 0)
-    {
-        DEBUG_PRINT((DEBUG FAIL "Error " OSAL_EC_FS " at targetFilePageSequenceCacheStatus...\n", OSAL_EC));
-        return -1;
-    }
-    else if (ret == 1)
+    if (hashMapForEach(&attack->targets_, targetsHmShouldEvictCB, 0) == HM_FE_BREAK)
     {
         return 1;
     }
@@ -1154,6 +1094,13 @@ int createEvictionSet(Attack *attack)
     // file eviction set
     if (!es->use_anon_memory_)
     {
+        // create file
+        ret = createRandomFile(es->eviction_file_path_, TOTAL_MEMORY_BYTES);
+        if (ret != 0)
+        {
+            DEBUG_PRINT((DEBUG FAIL "Error " OSAL_EC_FS " at createRandomFile...\n", OSAL_EC));
+            goto error;
+        }
         // get absolute path
         es->eviction_file_path_abs_ = calloc(OSAL_MAX_PATH_LEN, sizeof(char));
         if (es->eviction_file_path_abs_ == NULL)
@@ -1166,13 +1113,7 @@ int createEvictionSet(Attack *attack)
             DEBUG_PRINT((DEBUG FAIL "Error " OSAL_EC_FS " at osal_fullpath...\n", OSAL_EC));
             goto error;
         }
-
-        ret = createRandomFile(es->eviction_file_path_abs_, TOTAL_MEMORY_BYTES);
-        if (ret != 0)
-        {
-            DEBUG_PRINT((DEBUG FAIL "Error " OSAL_EC_FS " at createRandomFile...\n", OSAL_EC));
-            goto error;
-        }
+        // map eviction file
         if (mapFile(&es->mapping_, es->eviction_file_path_abs_,
                     FILE_ACCESS_READ | FILE_NOATIME, MAPPING_SHARED | MAPPING_ACCESS_READ) != 0)
         {
@@ -1199,16 +1140,29 @@ error:
 
 ssize_t evictTargets(Attack *attack, TargetsEvictedFn targets_evicted_fn, void *target_evicted_arg_ptr)
 {
+    ssize_t accessed_memory = 0;
+    uint64_t start_cycle = 0, end_cycle = 0;
+
     // single thread
     if (!attack->eviction_set_.use_access_threads_)
     {
-        return evictTargets_(attack, targets_evicted_fn, target_evicted_arg_ptr);
+        TSC_BENCH_START(start_cycle);
+        accessed_memory = evictTargets_(attack, targets_evicted_fn, target_evicted_arg_ptr);
+        TSC_BENCH_STOP(end_cycle);
     }
     // multiple threads
     else
     {
-        return evictTargetsThreads_(attack, targets_evicted_fn, target_evicted_arg_ptr);
+        TSC_BENCH_START(start_cycle);
+        accessed_memory = evictTargetsThreads_(attack, targets_evicted_fn, target_evicted_arg_ptr);
+        TSC_BENCH_STOP(end_cycle);
     }
+
+    // save public statistics
+    attack->eviction_set_.last_eviction_accessed_memory_bytes_ = accessed_memory;
+    attack->eviction_set_.last_eviction_time_ns_ = tsc_bench_get_runtime_ns(start_cycle, end_cycle);
+
+    return accessed_memory;
 }
 
 ssize_t evictTargets_(Attack *attack, TargetsEvictedFn targets_evicted_fn, void *targets_evicted_arg_ptr)
@@ -1395,7 +1349,7 @@ ssize_t evictTargets__(Attack *attack, TargetsEvictedFn targets_evicted_fn, void
             pthread_rwlock_rdlock(&attack->working_set_.ws_lists_lock_);
             activateWS(attack->working_set_.resident_files_[attack->working_set_.up_to_date_list_set_].head_,
                        attack->working_set_.resident_files_[attack->working_set_.up_to_date_list_set_].count_,
-                       attack->working_set_.access_use_file_api_);
+                       attack->working_set_.use_file_api_);
             pthread_rwlock_unlock(&attack->working_set_.ws_lists_lock_);
         }
 
@@ -2027,11 +1981,11 @@ int initialProfileResidentPagesFile(Attack *attack, char *file_path)
     // open file, do not update access time (faster), skip in case of errors
     if (mapFile(&current_cached_file.mapping_, file_path, FILE_ACCESS_READ | FILE_NOATIME, MAPPING_ACCESS_READ | MAPPING_SHARED) != 0)
     {
-        DEBUG_PRINT((DEBUG WS_TAG FAIL "Error " OSAL_EC_FS " at mapping of file: %s...\n", OSAL_EC, file_path));
+        DEBUG_PRINT((DEBUG WS_TAG FAIL "Error " OSAL_EC_FS " at mapFile: %s...\n", OSAL_EC, file_path));
         goto error;
     }
     // advise random access to avoid readahead (we dont want to change the working set)
-    if (adviseFileUsage(&current_cached_file.mapping_, 0, 0, FILE_USAGE_RANDOM) != 0)
+    if (adviseFileUsage(&current_cached_file.mapping_, 0, 0, USAGE_RANDOM) != 0)
     {
         DEBUG_PRINT((DEBUG WS_TAG WARNING "Error " OSAL_EC_FS " at adviseFileUsage...\n", OSAL_EC));
     }
@@ -2051,14 +2005,14 @@ int initialProfileResidentPagesFile(Attack *attack, char *file_path)
         if (target_file->has_target_pages_)
         {
             targetPagesCacheStatusReadaheadTriggerPagesSet(&current_cached_file.linked_target_file_->target_pages_,
-                                                           &current_cached_file.mapping_, attack->ra_window_size_pages_, 0);
+                                                           &current_cached_file.mapping_, attack->fa_window_size_pages_, 0);
             targetPagesCacheStatusSet(&current_cached_file.linked_target_file_->target_pages_,
                                       &current_cached_file.mapping_, 0);
         }
         else if (target_file->has_target_sequence_)
         {
             targetSequenceCacheStatusReadaheadTriggerPagesSet(&current_cached_file.linked_target_file_->target_sequence_,
-                                                              &current_cached_file.mapping_, attack->ra_window_size_pages_, 0);
+                                                              &current_cached_file.mapping_, attack->fa_window_size_pages_, 0);
             targetSequenceCacheStatusSet(&current_cached_file.linked_target_file_->target_sequence_,
                                          &current_cached_file.mapping_, 0);
         }
@@ -2095,7 +2049,7 @@ int initialProfileResidentPagesFile(Attack *attack, char *file_path)
     attack->working_set_.mem_in_ws_[attack->working_set_.up_to_date_list_set_] += current_cached_file.resident_memory_;
 
     // cleanup
-    if (attack->working_set_.access_use_file_api_)
+    if (attack->working_set_.use_file_api_)
     {
         closeMappingOnly(&current_cached_file.mapping_);
     }
@@ -2111,32 +2065,32 @@ error:
 }
 
 void targetPagesCacheStatusReadaheadTriggerPagesSet(DynArray *target_pages, FileMapping *target_file_mapping,
-                                                    size_t ra_window_size_pages, uint8_t val)
+                                                    size_t fa_window_size_pages, uint8_t val)
 {
     for (size_t t = 0; t < target_pages->size_; t++)
     {
         TargetPage *target_page = dynArrayGet(target_pages, t);
         targetPageCacheStatusReadaheadTriggerPagesSet(target_page->offset_, target_file_mapping,
-                                                      ra_window_size_pages, val);
+                                                      fa_window_size_pages, val);
     }
 }
 
 void targetPageCacheStatusReadaheadTriggerPagesSet(size_t offset, FileMapping *target_file_mapping,
-                                                   size_t ra_window_size_pages, uint8_t val)
+                                                   size_t fa_window_size_pages, uint8_t val)
 {
     targetPageCacheStatusReadaheadTriggerPagesBackSet(offset, target_file_mapping,
-                                                      ra_window_size_pages, val);
+                                                      fa_window_size_pages, val);
     targetPageCacheStatusReadaheadTriggerPagesFrontSet(offset, target_file_mapping,
-                                                       ra_window_size_pages, val);
+                                                       fa_window_size_pages, val);
 }
 
 void targetPageCacheStatusReadaheadTriggerPagesBackSet(size_t offset, FileMapping *target_file_mapping,
-                                                       size_t ra_window_size_pages, uint8_t val)
+                                                       size_t fa_window_size_pages, uint8_t val)
 {
-    size_t back_ra_trigger_window = ra_window_size_pages / 2 - 1;
+    size_t back_ra_trigger_window = fa_window_size_pages / 2 - 1;
 
     // trim pages in back that could trigger readahead
-    if (offset < ra_window_size_pages)
+    if (offset < fa_window_size_pages)
     {
         for (ssize_t p = offset - 1; p >= 0; p--)
             target_file_mapping->pages_cache_status_[p] = val;
@@ -2149,10 +2103,10 @@ void targetPageCacheStatusReadaheadTriggerPagesBackSet(size_t offset, FileMappin
 }
 
 void targetPageCacheStatusReadaheadTriggerPagesFrontSet(size_t offset, FileMapping *target_file_mapping,
-                                                        size_t ra_window_size_pages, uint8_t val)
+                                                        size_t fa_window_size_pages, uint8_t val)
 {
     // TODO at least for linux
-    size_t front_ra_trigger_window = ra_window_size_pages / 2;
+    size_t front_ra_trigger_window = fa_window_size_pages / 2;
 
     // trim pages in front that could trigger readahead
     for (ssize_t p = offset + 1; p <= MAX(offset + front_ra_trigger_window, target_file_mapping->size_pages_ - 1); p++)
@@ -2169,12 +2123,12 @@ void targetPagesCacheStatusSet(DynArray *target_pages, FileMapping *target_file_
 }
 
 void targetSequenceCacheStatusReadaheadTriggerPagesSet(PageSequence *target_sequence, FileMapping *target_file_mapping,
-                                                       size_t ra_window_size_pages, uint8_t val)
+                                                       size_t fa_window_size_pages, uint8_t val)
 {
     targetPageCacheStatusReadaheadTriggerPagesBackSet(target_sequence->offset_, target_file_mapping,
-                                                      ra_window_size_pages, val);
+                                                      fa_window_size_pages, val);
     targetPageCacheStatusReadaheadTriggerPagesFrontSet(target_sequence->offset_ + target_sequence->length_ - 1, target_file_mapping,
-                                                       ra_window_size_pages, val);
+                                                       fa_window_size_pages, val);
 }
 
 void targetSequenceCacheStatusSet(PageSequence *target_sequence, FileMapping *target_file_mapping, uint8_t val)
@@ -2353,7 +2307,7 @@ void *wsManagerThread(void *arg)
         thread_data->id_ = t;
         thread_data->running_ = 1;
         thread_data->sleep_time_ = ws->access_sleep_time_;
-        if (pthread_create(&thread_data->tid_, NULL, pageAccessThreadWS, NULL) != 0)
+        if (pthread_create(&thread_data->tid_, NULL, pageAccessThreadWS, thread_data) != 0)
         {
             DEBUG_PRINT((DEBUG WS_TAG FAIL "Error " OSAL_EC_FS " at pthread_create...\n", OSAL_EC));
             goto error;
@@ -2430,7 +2384,7 @@ void *pageAccessThreadWS(void *arg)
                          pthread_self(), resident_files_count, (void *)resident_files_start));
         }
         accessed_memory = activateWS(resident_files_start, resident_files_count,
-                                     ws->access_use_file_api_);
+                                     ws->use_file_api_);
         pthread_rwlock_unlock(&ws->ws_lists_lock_);
 
         DEBUG_PRINT((DEBUG WS_TAG WORKER_TAG INFO "Worker thread (resident files head: %p) accessed %zu kB memory.\n",
@@ -2471,6 +2425,7 @@ int reevaluateWorkingSet(Attack *attack)
 
 int reevaluateWorkingSetList(List *cached_file_list, Attack *attack, size_t inactive_list_set)
 {
+    int ret = 0;
     AttackWorkingSet *ws = &attack->working_set_;
     ListNode *current_cached_file_node = NULL;
     ListNode *next_node = NULL;
@@ -2492,6 +2447,18 @@ int reevaluateWorkingSetList(List *cached_file_list, Attack *attack, size_t inac
         }
 
         // reevaluate file
+        // try remap (might be neccessary), name should not be necessary as already opened
+        if (mapFile(&current_cached_file.mapping_, "", FILE_ACCESS_READ | FILE_NOATIME, MAPPING_ACCESS_READ | MAPPING_SHARED) != 0)
+        {
+            DEBUG_PRINT((DEBUG WS_TAG FAIL "Error " OSAL_EC_FS " at mapFile...\n", OSAL_EC));
+            goto error;
+        }
+        // advise random access to avoid readahead (we dont want to change the working set)
+        if (adviseFileUsage(&current_cached_file.mapping_, 0, 0, USAGE_RANDOM) != 0)
+        {
+            DEBUG_PRINT((DEBUG WS_TAG WARNING "Error " OSAL_EC_FS " at adviseFileUsage...\n", OSAL_EC));
+        }
+
         // get status of the file pages
         if (getCacheStatusFile(&current_cached_file.mapping_) != 0)
         {
@@ -2504,14 +2471,14 @@ int reevaluateWorkingSetList(List *cached_file_list, Attack *attack, size_t inac
             if (current_cached_file.linked_target_file_->has_target_pages_)
             {
                 targetPagesCacheStatusReadaheadTriggerPagesSet(&current_cached_file.linked_target_file_->target_pages_,
-                                                               &current_cached_file.mapping_, attack->ra_window_size_pages_, 0);
+                                                               &current_cached_file.mapping_, attack->fa_window_size_pages_, 0);
                 targetPagesCacheStatusSet(&current_cached_file.linked_target_file_->target_pages_,
                                           &current_cached_file.mapping_, 0);
             }
             else if (current_cached_file.linked_target_file_->has_target_sequence_)
             {
                 targetSequenceCacheStatusReadaheadTriggerPagesSet(&current_cached_file.linked_target_file_->target_sequence_,
-                                                                  &current_cached_file.mapping_, attack->ra_window_size_pages_, 0);
+                                                                  &current_cached_file.mapping_, attack->fa_window_size_pages_, 0);
                 targetSequenceCacheStatusSet(&current_cached_file.linked_target_file_->target_sequence_,
                                              &current_cached_file.mapping_, 0);
             }
@@ -2544,20 +2511,24 @@ int reevaluateWorkingSetList(List *cached_file_list, Attack *attack, size_t inac
         current_cached_file_node = next_node;
     }
 
-    return 0;
-
+    goto cleanup;
 error:
-
+    ret = -1;
     dynArrayDestroy(&current_cached_file.resident_page_sequences_, NULL);
-    return -1;
+
+cleanup:
+    if(attack->working_set_.use_file_api_)
+    {
+        closeMappingOnly(&current_cached_file.mapping_);
+    }
+
+    return ret;
 }
 
 /*-----------------------------------------------------------------------------
  * FUNCTIONS RELATED TO ATTACK SUPPRESS SET
  */
 
-// TODO use target files hash map to find pages and to add their readahead pages
-// watch out to not add other target pages to the suppress set
 int spawnSuppressThreads(Attack *attack)
 {
     // prepare suppress set
@@ -2644,14 +2615,14 @@ int targetsHmPrepareSuppressSet(void *data, void *arg)
     if (target_file->has_target_pages_)
     {
         targetPagesCacheStatusReadaheadTriggerPagesSet(&target_file->target_pages_,
-                                                       &target_file->mapping_, attack->ra_window_size_pages_, 1);
+                                                       &target_file->mapping_, attack->fa_window_size_pages_, 1);
         targetPagesCacheStatusSet(&target_file->target_pages_,
                                   &target_file->mapping_, 0);
     }
     else if (target_file->has_target_sequence_)
     {
         targetSequenceCacheStatusReadaheadTriggerPagesSet(&target_file->target_sequence_,
-                                                          &target_file->mapping_, attack->ra_window_size_pages_, 1);
+                                                          &target_file->mapping_, attack->fa_window_size_pages_, 1);
         targetSequenceCacheStatusSet(&target_file->target_sequence_,
                                      &target_file->mapping_, 0);
     }
