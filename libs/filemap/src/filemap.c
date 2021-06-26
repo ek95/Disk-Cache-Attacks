@@ -868,14 +868,12 @@ int getCacheStatusFileRange(FileMapping *file_mapping, size_t offset, size_t len
 int getCacheStatusFile(FileMapping *file_mapping)
 {
   // malloc page cache status array if not done yet
+  file_mapping->pages_cache_status_ = realloc(file_mapping->pages_cache_status_, sizeof(uint8_t) * file_mapping->size_pages_);
   if (file_mapping->pages_cache_status_ == NULL)
   {
-    file_mapping->pages_cache_status_ = malloc(sizeof(uint8_t) * file_mapping->size_pages_);
-    if (file_mapping->pages_cache_status_ == NULL)
-    {
-      return -1;
-    }
+    return -1;
   }
+  
 
   return FC_STATE_FN(file_mapping, 0, file_mapping->size_pages_ * PAGE_SIZE, file_mapping->pages_cache_status_);
 }
@@ -910,13 +908,11 @@ void closeMappingOnly(void *arg)
   FileMapping *file_mapping = arg;
 
   closeMappingOnlyIntern(file_mapping);
-  // free state also here, remapping might update size
-  free(file_mapping->pages_cache_status_);
-  file_mapping->pages_cache_status_ = NULL;
 }
 
 void closeFileMapping(void *arg)
 {
   closeMappingOnly(arg);
   closeFileOnly(arg);
+  freeFileCacheStatus(arg);
 }

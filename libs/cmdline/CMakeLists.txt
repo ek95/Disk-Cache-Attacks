@@ -10,8 +10,8 @@ set(CMAKE_EXE_LINKER_FLAGS_RELEASE "-s")
 # debuginfo flags 
 set(CMAKE_C_FLAGS_DEBUGINFO "-g3 -Wall -Wunused -Wpedantic")
 # debug flags
-set(CMAKE_C_FLAGS_DEBUG "-g -fsanitize=address -fsanitize=thread -Wall -Wunused -Wpedantic")
-set(CMAKE_EXE_LINKER_FLAGS_DEBUG "-fsanitize=address -fsanitize=thread")
+set(CMAKE_C_FLAGS_DEBUG "-g -fsanitize=address -Wall -Wunused -Wpedantic")
+set(CMAKE_EXE_LINKER_FLAGS_DEBUG "-fsanitize=address")
 
 # default to release build
 if(NOT CMAKE_BUILD_TYPE)

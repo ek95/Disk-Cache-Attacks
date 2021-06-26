@@ -38,7 +38,7 @@
 #define DEF_BS_EVALUATION_SLEEP_TIME_NS (0)
 
 // Working Set
-#define DEF_WS_EVALUATION 1 
+#define DEF_WS_EVALUATION 1
 #define DEF_WS_EVICTION_IGNORE_EVALUATION 1  
 #define DEF_WS_USE_FILE_API 1
 char* DEF_WS_SEARCH_PATHS[] =
@@ -46,13 +46,13 @@ char* DEF_WS_SEARCH_PATHS[] =
     "/bin", "/dev/shm", "/etc", /*"/home",*/ "/lib", "/opt",
     "/run", "/sbin", "/snap", "/tmp", "/usr", "/var", NULL
 };
-#define DEF_WS_PS_ADD_THRESHOLD DEF_FA_WINDOW_SIZE_PAGES  
+#define DEF_WS_PS_ADD_THRESHOLD (4)  
 #define DEF_WS_ACCESS_SLEEP_TIME_S (0) 
 #define DEF_WS_ACCESS_SLEEP_TIME_NS (100 * 1000 * 1000ULL) 
 #define DEF_WS_EVALUATION_SLEEP_TIME_S (5) 
 #define DEF_WS_EVALUATION_SLEEP_TIME_NS (0)  
 // not implemented yet
-#define DEF_WS_PROFILE_UPDATE_ALL_X_EVALUATIONS 0  
+#define DEF_WS_PROFILE_UPDATE_ALL_X_EVALUATIONS ((size_t) -1)  
 #define DEF_WS_ACCESS_THREAD_COUNT 4
 
 // Suppress Set

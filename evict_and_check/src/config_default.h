@@ -52,7 +52,7 @@ char* DEF_WS_SEARCH_PATHS[] =
 #define DEF_WS_EVALUATION_SLEEP_TIME_S (5) 
 #define DEF_WS_EVALUATION_SLEEP_TIME_NS (0)  
 // not implemented yet
-#define DEF_WS_PROFILE_UPDATE_ALL_X_EVALUATIONS 0  
+#define DEF_WS_PROFILE_UPDATE_ALL_X_EVALUATIONS ((size_t) -1)   
 #define DEF_WS_ACCESS_THREAD_COUNT 4
 
 // Suppress Set

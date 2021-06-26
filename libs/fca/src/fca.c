@@ -87,10 +87,12 @@ static int initAttackBlockingSet(AttackBlockingSet *bs);
 static int closeAttackBlockingSet(AttackBlockingSet *bs);
 static int initAttackWorkingSet(AttackWorkingSet *ws);
 static int closeAttackWorkingSet(AttackWorkingSet *ws);
-static int initAttackSuppressSet(AttackSuppressSet *ss);
-static int closeAttackSuppressSet(AttackSuppressSet *ss);
 static void initPageAccessThreadWSData(PageAccessThreadWSData *ps_access_thread_ws_data);
 static int closePageAccessThreadWSData(void *arg);
+static int initAttackSuppressSet(AttackSuppressSet *ss);
+static int closeAttackSuppressSet(AttackSuppressSet *ss);
+//static void initPageAccessThreadSSData(PageAccessThreadSSData *ps_access_thread_ss_data);
+static int closePageAccessThreadSSData(void *arg);
 static int initAttack(Attack *attack);
 static void freeAttack(Attack *attack);
 
@@ -270,6 +272,7 @@ int initAttackEvictionSet(AttackEvictionSet *es)
 
 int closeAttackEvictionSet(AttackEvictionSet *es)
 {
+    // close worker threads
     dynArrayDestroy(&es->access_threads_, closePageAccessThreadESData);
     sem_destroy(&es->worker_start_sem_);
     sem_destroy(&es->worker_join_sem_);
@@ -348,14 +351,17 @@ int initAttackWorkingSet(AttackWorkingSet *ws)
 
 int closeAttackWorkingSet(AttackWorkingSet *ws)
 {
-    pthread_join(ws->manager_thread_, NULL);
-    for (size_t i = 0; i < 2; i++)
-    {
-        listDestroy(&ws->resident_files_[i], closeCachedFile);
-        listDestroy(&ws->non_resident_files_[i], closeCachedFile);
-    }
-    pthread_rwlock_destroy(&ws->ws_lists_lock_);
+    // stop worker threads
     dynArrayDestroy(&ws->access_threads_, closePageAccessThreadWSData);
+    pthread_join(ws->manager_thread_, NULL);
+    // only closeCachedFile from active list
+    // other ones are basically just copy with old resident pages list
+    listDestroy(&ws->resident_files_[ws->up_to_date_list_set_], closeCachedFile);
+    listDestroy(&ws->non_resident_files_[ws->up_to_date_list_set_], closeCachedFile);
+    // just free resident pages list
+    listDestroy(&ws->resident_files_[ws->up_to_date_list_set_ ^ 1], closeCachedFileResidentPageSequencesOnly);
+    listDestroy(&ws->non_resident_files_[ws->up_to_date_list_set_ ^ 1], closeCachedFileResidentPageSequencesOnly);
+    pthread_rwlock_destroy(&ws->ws_lists_lock_);
 
     return 0;
 }
@@ -395,6 +401,8 @@ int initAttackSuppressSet(AttackSuppressSet *ss)
 
 int closeAttackSuppressSet(AttackSuppressSet *ss)
 {
+    // stop worker threads
+    dynArrayDestroy(&ss->access_threads_, closePageAccessThreadSSData);
     dynArrayDestroy(&ss->suppress_set_, closeTargetFileTargetsOnly);
 
     return 0;
@@ -2034,6 +2042,16 @@ int initialProfileResidentPagesFile(Attack *attack, char *file_path)
     // else add current cached file to cached files
     else
     {
+        // cleanup
+        if (attack->working_set_.use_file_api_)
+        {
+            closeMappingOnly(&current_cached_file.mapping_);
+        }
+        else
+        {
+            closeFileOnly(&current_cached_file.mapping_);
+        }
+
         // skip in case of errors
         if (!listAppendBack(&attack->working_set_.resident_files_[attack->working_set_.up_to_date_list_set_],
                             &current_cached_file))
@@ -2048,15 +2066,6 @@ int initialProfileResidentPagesFile(Attack *attack, char *file_path)
     attack->working_set_.memory_checked_ += current_cached_file.mapping_.size_;
     attack->working_set_.mem_in_ws_[attack->working_set_.up_to_date_list_set_] += current_cached_file.resident_memory_;
 
-    // cleanup
-    if (attack->working_set_.use_file_api_)
-    {
-        closeMappingOnly(&current_cached_file.mapping_);
-    }
-    else
-    {
-        closeFileOnly(&current_cached_file.mapping_);
-    }
     return 0;
 
 error:
@@ -2194,7 +2203,7 @@ ssize_t fileMappingProfileResidentPageSequences(FileMapping *mapping, size_t ps_
                     goto error;
                 }
 
-                resident_pages++;
+                resident_pages += sequence.length_;
                 DEBUG_PRINT((DEBUG WS_TAG INFO "Added page sequence with page offset %zu and %zu pages\n",
                              sequence.offset_, sequence.length_));
                 // reset sequence length
@@ -2212,7 +2221,7 @@ ssize_t fileMappingProfileResidentPageSequences(FileMapping *mapping, size_t ps_
             goto error;
         }
 
-        resident_pages++;
+        resident_pages += sequence.length_;
         DEBUG_PRINT((DEBUG WS_TAG INFO "Added page sequence with page offset %zu and %zu pages\n",
                      sequence.offset_, sequence.length_));
     }
@@ -2254,7 +2263,7 @@ size_t activateWS(ListNode *resident_files_start, size_t resident_files_count, i
                         pread(current_cached_file->mapping_.internal_.fd_, (void *)&tmp, 1, p * PAGE_SIZE) != 1)
                     {
                         // in case of error just print warnings and access whole ES
-                        DEBUG_PRINT((DEBUG WS_TAG WORKER_TAG WARNING "Error " OSAL_EC_FS " at pread...\n", pthread_self(), OSAL_EC));
+                        //DEBUG_PRINT((DEBUG WS_TAG WORKER_TAG WARNING "Error " OSAL_EC_FS " at pread...\n", pthread_self(), OSAL_EC));
                     }
 #elif defined(_WIN32)
                     // TODO implement
@@ -2376,7 +2385,8 @@ void *pageAccessThreadWS(void *arg)
         if (current_ws_list_set != ws->up_to_date_list_set_)
         {
             current_ws_list_set = ws->up_to_date_list_set_;
-            resident_files_count = ws->resident_files_[current_ws_list_set].count_ /
+            // round up to cover every file
+            resident_files_count = (ws->resident_files_[current_ws_list_set].count_ + ws->access_thread_count_ - 1) /
                                    ws->access_thread_count_;
             resident_files_start = listGetIndex(&ws->resident_files_[current_ws_list_set],
                                                 thread_data->id_ * resident_files_count);
@@ -2497,6 +2507,12 @@ int reevaluateWorkingSetList(List *cached_file_list, Attack *attack, size_t inac
             goto error;
         }
 
+        // unmap if wanted
+        if(attack->working_set_.use_file_api_)
+        {
+            closeMappingOnly(&current_cached_file.mapping_);
+        }
+
         // move to right list
         if (current_cached_file.resident_memory_ == 0)
         {
@@ -2531,6 +2547,8 @@ cleanup:
 
 int spawnSuppressThreads(Attack *attack)
 {
+    PageAccessThreadSSData *thread_data = NULL;
+
     // prepare suppress set
     if (prepareSuppressSet(attack) != 0)
     {
@@ -2538,21 +2556,23 @@ int spawnSuppressThreads(Attack *attack)
         return -1;
     }
 
-    PageAccessThreadSSData thread_data = {
+    PageAccessThreadSSData thread_data_template = {
         .running_ = 1,
         .ss_ = &attack->suppress_set_,
         .sleep_time_ = attack->suppress_set_.access_sleep_time_};
     // readahead surpressing threads for target
     for (size_t t = 0; t < attack->suppress_set_.access_thread_count_; t++)
     {
-        if (pthread_create(&thread_data.tid_, NULL, suppressThread, (void *)&thread_data) != 0)
-        {
-            DEBUG_PRINT((DEBUG SS_TAG FAIL "Error " OSAL_EC_FS " at pthread_create...\n", OSAL_EC));
-            goto error;
-        }
-        if (!dynArrayAppend(&attack->suppress_set_.access_threads_, &thread_data))
+        thread_data = dynArrayAppend(&attack->suppress_set_.access_threads_, &thread_data_template);
+        if (thread_data == NULL)
         {
             DEBUG_PRINT((DEBUG SS_TAG FAIL "Error " OSAL_EC_FS " at dynArrayAppend...\n", OSAL_EC));
+            goto error;
+        }
+
+        if (pthread_create(&thread_data->tid_, NULL, suppressThread, thread_data) != 0)
+        {
+            DEBUG_PRINT((DEBUG SS_TAG FAIL "Error " OSAL_EC_FS " at pthread_create...\n", OSAL_EC));
             goto error;
         }
     }
