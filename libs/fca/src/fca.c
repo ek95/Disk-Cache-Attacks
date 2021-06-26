@@ -37,6 +37,7 @@
  * DEFINES
  */
 #define MAX(a, b) (((a) >= (b)) ? a : b)
+#define MIN(a, b) (((a) <= (b)) ? a : b)
 
 /*-----------------------------------------------------------------------------
  * DEFINES
@@ -649,6 +650,7 @@ int fcaStart(Attack *attack, int flags)
     }
 
     // start manager thread for working set
+    // only if working set is not empty
     if (attack->use_attack_ws_)
     {
         DEBUG_PRINT((DEBUG WS_TAG INFO "Spawning working set manager thread...\n"));
@@ -773,7 +775,7 @@ int fcaAddTargetsFromFile(Attack *attack, char *targets_config_file_path)
         // and remove it
         if (line_buffer[line_length - 1] != '\n')
         {
-            DEBUG_PRINT((DEBUG FAIL "Error: Unable to read a full line (overflow?)..."));
+            DEBUG_PRINT((DEBUG FAIL "Error: Unable to read a full line (overflow?)...\n"));
             goto error;
         }
         line_buffer[--line_length] = 0;
@@ -788,9 +790,11 @@ int fcaAddTargetsFromFile(Attack *attack, char *targets_config_file_path)
                 DEBUG_PRINT((DEBUG FAIL "Error " OSAL_EC_FS " at hashMapInsert...\n", OSAL_EC));
                 goto error;
             }
+            DEBUG_PRINT((DEBUG INFO "Added target file %s.\n", current_target_file_path_abs));
             // init new target file
             initTargetFile(&current_target_file, FCA_TARGET_TYPE_PAGES);
             parse_pages = 0;
+            continue;
         }
 
         if (parse_pages)
@@ -1123,7 +1127,7 @@ int createEvictionSet(Attack *attack)
         }
         // map eviction file
         if (mapFile(&es->mapping_, es->eviction_file_path_abs_,
-                    FILE_ACCESS_READ | FILE_NOATIME, MAPPING_SHARED | MAPPING_ACCESS_READ) != 0)
+                    FILE_ACCESS_READ | FILE_NOATIME, MAPPING_SHARED | MAPPING_ACCESS_READ | MAPPING_ACCESS_EXECUTE) != 0)
         {
             DEBUG_PRINT((DEBUG FAIL "Error " OSAL_EC_FS " at mapFile for: %s ...\n", OSAL_EC,
                          es->eviction_file_path_abs_));
@@ -1133,7 +1137,7 @@ int createEvictionSet(Attack *attack)
     else
     {
         // anonymous eviction set
-        if (mapAnon(&es->mapping_, TOTAL_MEMORY_BYTES, MAPPING_PRIVATE | MAPPING_ACCESS_READ | MAPPING_ACCESS_WRITE | MAPPING_NORESERVE) != 0)
+        if (mapAnon(&es->mapping_, TOTAL_MEMORY_BYTES, MAPPING_PRIVATE | MAPPING_ACCESS_READ | MAPPING_ACCESS_WRITE | MAPPING_ACCESS_EXECUTE | MAPPING_NORESERVE) != 0)
         {
             DEBUG_PRINT((DEBUG FAIL "Error " OSAL_EC_FS " at mapAnon...\n", OSAL_EC));
             goto error;
@@ -1345,6 +1349,7 @@ ssize_t evictTargets__(Attack *attack, TargetsEvictedFn targets_evicted_fn, void
     volatile uint8_t tmp = 0;
     (void)tmp;
     size_t accessed_mem = 0;
+    int targets_evicted = 0;
 
     // access memory
     // accessed memory can never be zero in case of eviction
@@ -1372,7 +1377,7 @@ ssize_t evictTargets__(Attack *attack, TargetsEvictedFn targets_evicted_fn, void
         if (accessed_mem % attack->eviction_set_.prefetch_es_bytes_ == 0)
         {
             if (adviseFileUsage(&attack->eviction_set_.mapping_, access_offset + accessed_mem,
-                                attack->eviction_set_.prefetch_es_bytes_, USAGE_WILLNEED) != 0)
+                                MIN(attack->eviction_set_.prefetch_es_bytes_, access_len - accessed_mem), USAGE_WILLNEED) != 0)
             {
                 DEBUG_PRINT((DEBUG ES_TAG WORKER_TAG WARNING "Error " OSAL_EC_FS " at adviseFileUsage...\n", pthread_self(), OSAL_EC));
             }
@@ -1402,6 +1407,7 @@ ssize_t evictTargets__(Attack *attack, TargetsEvictedFn targets_evicted_fn, void
         if (accessed_mem % attack->eviction_set_.targets_check_all_x_bytes_ == 0 &&
             targets_evicted_fn(targets_evicted_arg_ptr))
         {
+            targets_evicted = 1;
             break;
         }
     }
@@ -1413,7 +1419,7 @@ ssize_t evictTargets__(Attack *attack, TargetsEvictedFn targets_evicted_fn, void
         DEBUG_PRINT((DEBUG ES_TAG WORKER_TAG WARNING "Error " OSAL_EC_FS " at adviseFileUsage...\n", pthread_self(), OSAL_EC));
     }
 
-    return accessed_mem;
+    return targets_evicted ? accessed_mem : 0;
 }
 
 /*-----------------------------------------------------------------------------
@@ -2118,7 +2124,7 @@ void targetPageCacheStatusReadaheadTriggerPagesFrontSet(size_t offset, FileMappi
     size_t front_ra_trigger_window = fa_window_size_pages / 2;
 
     // trim pages in front that could trigger readahead
-    for (ssize_t p = offset + 1; p <= MAX(offset + front_ra_trigger_window, target_file_mapping->size_pages_ - 1); p++)
+    for (ssize_t p = offset + 1; p <= MIN(offset + front_ra_trigger_window, target_file_mapping->size_pages_ - 1); p++)
         target_file_mapping->pages_cache_status_[p] = val;
 }
 
@@ -2199,12 +2205,12 @@ ssize_t fileMappingProfileResidentPageSequences(FileMapping *mapping, size_t ps_
                 // add sequence pages
                 if (!dynArrayAppend(resident_page_sequences, &sequence))
                 {
-                    DEBUG_PRINT((DEBUG WS_TAG FAIL "Error " OSAL_EC_FS " at dynArrayAppend...\n", OSAL_EC));
+                    DEBUG_PRINT((DEBUG FAIL "Error " OSAL_EC_FS " at dynArrayAppend...\n", OSAL_EC));
                     goto error;
                 }
 
                 resident_pages += sequence.length_;
-                DEBUG_PRINT((DEBUG WS_TAG INFO "Added page sequence with page offset %zu and %zu pages\n",
+                DEBUG_PRINT((DEBUG INFO "Added page sequence with page offset %zu and %zu pages\n",
                              sequence.offset_, sequence.length_));
                 // reset sequence length
                 sequence.length_ = 0;
@@ -2217,12 +2223,12 @@ ssize_t fileMappingProfileResidentPageSequences(FileMapping *mapping, size_t ps_
         // add sequence pages
         if (!dynArrayAppend(resident_page_sequences, &sequence))
         {
-            DEBUG_PRINT((DEBUG WS_TAG FAIL "Error " OSAL_EC_FS " at dynArrayAppend...\n", OSAL_EC));
+            DEBUG_PRINT((DEBUG FAIL "Error " OSAL_EC_FS " at dynArrayAppend...\n", OSAL_EC));
             goto error;
         }
 
         resident_pages += sequence.length_;
-        DEBUG_PRINT((DEBUG WS_TAG INFO "Added page sequence with page offset %zu and %zu pages\n",
+        DEBUG_PRINT((DEBUG INFO "Added page sequence with page offset %zu and %zu pages\n",
                      sequence.offset_, sequence.length_));
     }
 
@@ -2606,6 +2612,8 @@ int targetsHmPrepareSuppressSet(void *data, void *arg)
     // copy of target file
     TargetFile target_file_suppress = *target_file;
 
+    DEBUG_PRINT((DEBUG SS_TAG INFO "Processing target file: %s...\n", target_file->file_path_abs_));
+
     // if whole file is target we can not suppress
     if (target_file->is_target_file_)
     {
@@ -2719,7 +2727,8 @@ void *suppressThread(void *arg)
 
     while (__atomic_load_n(&thread_data->running_, __ATOMIC_RELAXED))
     {
-        activateSS(&ss->suppress_set_, ss->use_file_api_);
+        // TODO
+        //activateSS(&ss->suppress_set_, ss->use_file_api_);
         nanosleep(&thread_data->sleep_time_, NULL);
     }
 

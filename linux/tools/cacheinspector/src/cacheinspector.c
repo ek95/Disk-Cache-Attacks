@@ -44,6 +44,8 @@ int main(int argc, char *argv[])
   PageFlagsFd pageflags_fd = PAGE_FLAGS_FD_STATIC_INIT;
   KPageFlagsEntry page_flags;
 
+  changeFcStateSource(FC_SOURCE_MINCORE);
+
   initFileMapping(&file_mapping);
 
   if (argc != ARG_COUNT)
@@ -53,7 +55,8 @@ int main(int argc, char *argv[])
   }
 
   // init performance counter timing library
-  if (tsc_bench_init(0) != 0)
+  // FIXME
+  if (tsc_bench_init(2000) != 0)
   {
     printf("Error at tsc_bench_init\n");
     goto error;
@@ -75,7 +78,7 @@ int main(int argc, char *argv[])
   }
 
   // map test file
-  if (mapFile(&file_mapping, argv[1], FILE_ACCESS_READ, MAPPING_ACCESS_READ /*| MAPPING_ACCESS_EXECUTE*/ | MAPPING_SHARED) != 0)
+  if (mapFile(&file_mapping, argv[1], FILE_ACCESS_READ, MAPPING_ACCESS_READ | MAPPING_ACCESS_EXECUTE | MAPPING_SHARED) != 0)
   {
     printf("Error (%s) at mapFile for: %s ...\n", strerror(errno), argv[0]);
     goto error;
@@ -222,7 +225,13 @@ int main(int argc, char *argv[])
         printf("Invalid syntax!\n");
         continue;
       }
-      selection = atoi(arg);
+      switch(atoi(arg))
+      {
+        case 0: selection = FC_SOURCE_ACCESS; break; 
+        case 1: selection = FC_SOURCE_MINCORE; break; 
+        case 2: selection = FC_SOURCE_PREADV2; break; 
+
+      }
 
       if (changeFcStateSource(selection) == -1) 
       {

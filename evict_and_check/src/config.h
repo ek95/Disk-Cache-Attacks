@@ -2,9 +2,9 @@
 #define _CONFIG_H_
 
 // General
-#define DEF_USE_ATTACK_BS 1
-#define DEF_USE_ATTACK_WS 1
-#define DEF_USE_ATTACK_SS 1
+#define DEF_USE_ATTACK_BS 0
+#define DEF_USE_ATTACK_WS 0
+#define DEF_USE_ATTACK_SS 0
 
 // mincore by default
 #define DEF_FC_STATE_SOURCE 0x100
@@ -38,13 +38,14 @@
 #define DEF_BS_EVALUATION_SLEEP_TIME_NS (0)
 
 // Working Set
-#define DEF_WS_EVALUATION 1
+#define DEF_WS_EVALUATION 0
 #define DEF_WS_EVICTION_IGNORE_EVALUATION 1  
 #define DEF_WS_USE_FILE_API 1
 char* DEF_WS_SEARCH_PATHS[] =
 {
-    "/bin", "/dev/shm", "/etc", /*"/home",*/ "/lib", "/opt",
-    "/run", "/sbin", "/snap", "/tmp", "/usr", "/var", NULL
+    "/home/erik/Dokumente/Studium/Master/Master-Thesis/github/Disk-Cache-Attacks/linux/tools/cacheinspector/bin"
+    // "/bin", "/dev/shm", "/etc", /*"/home",*/ "/lib", "/opt",
+    //"/run", "/sbin", "/snap", "/tmp", "/usr", "/var", NULL
 };
 #define DEF_WS_PS_ADD_THRESHOLD (4)  
 #define DEF_WS_ACCESS_SLEEP_TIME_S (0) 

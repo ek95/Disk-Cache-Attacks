@@ -182,6 +182,14 @@ int hashMapForEach(HashMap *map, HashMapDataCallbackArgFn callback, void *arg)
 }
 
 
+static int hashMapFreeDataCallback(void *data, void *arg)
+{
+    HashMapDataCallbackFn callback = *((HashMapDataCallbackFn *) arg);
+    HashMapEntry *entry = data;
+    return callback(entry->data_);
+}
+
+
 void hashMapDestroy(HashMap *map, HashMapDataCallbackFn free_data) 
 {
     if(map->map_ == NULL) 
@@ -193,7 +201,7 @@ void hashMapDestroy(HashMap *map, HashMapDataCallbackFn free_data)
     {
         if(free_data != NULL)
         {
-            listForEachSimple(&map->map_[s], free_data);
+            listForEach(&map->map_[s], hashMapFreeDataCallback, &free_data);
         }
         listDestroy(&map->map_[s], freeHashMapEntry);
     }
