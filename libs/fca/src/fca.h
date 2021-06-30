@@ -4,6 +4,8 @@
 #define _GNU_SOURCE 1
 #define _DEFAULT_SOURCE 1
 
+// TODO times windows compatible
+
 /*-----------------------------------------------------------------------------
  * INCLUDES
  */

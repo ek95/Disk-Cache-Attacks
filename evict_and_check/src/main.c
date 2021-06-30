@@ -137,6 +137,12 @@ int main(int argc, char *argv[])
     size_t sum_eviction_accessed_memory = 0;
     size_t sum_eviction_time_ns = 0;
 
+    struct timespec wait_time = 
+    {
+        .tv_sec = 0,
+        .tv_nsec = 10 * 1000
+    };
+
     // initialise file mappings
     initFileMapping(&self_mapping);
     initFileMapping(&event_exec_mapping);
@@ -243,6 +249,9 @@ int main(int argc, char *argv[])
         printf(FAIL "Error " OSAL_EC_FS " at fcaStart...\n", OSAL_EC);
         goto error;
     }
+    printf(INFO "Initial working set now consists of %zu files (%zu bytes mapped).\n",
+                attack.working_set_.resident_files_[attack.working_set_.up_to_date_list_set_].count_,
+                attack.working_set_.mem_in_ws_[attack.working_set_.up_to_date_list_set_]);
 
     printf(OK "Ready...\n");
     // main event loop
@@ -270,7 +279,9 @@ int main(int argc, char *argv[])
             printSampleTrace(&attack);
         }
 
-        osal_sched_yield();
+        // TODO windows
+        nanosleep(&wait_time, NULL);
+        //osal_sched_yield();
     }
 
     if (hit_counter > 0)

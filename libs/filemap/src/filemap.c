@@ -106,15 +106,9 @@ static inline int mappingFlags2mmapFlags(int mapping_flags)
   return flags;
 }
 
-int mapFile(FileMapping *file_mapping, const char *file_path, int file_flags, int mapping_flags)
+static int mapFileIntern(FileMapping *file_mapping, const char *file_path, int file_flags, int mapping_flags)
 {
   struct stat file_stat;
-
-  // do nothing if already mapped
-  if (file_mapping->addr_ != NULL) 
-  {
-      return 0;
-  }
 
   // open file (if not already done)
   if (file_mapping->internal_.fd_ == -1)
@@ -150,7 +144,6 @@ int mapFile(FileMapping *file_mapping, const char *file_path, int file_flags, in
 
   return 0;
 error:
-  closeFileMapping(file_mapping);
   return -1;
 }
 
@@ -482,14 +475,9 @@ static inline DWORD mappingFlags2mapViewOfFileAccess(int mapping_flags)
 }
 
 // if already mapped nothing happens, close first to remap!
-int mapFile(FileMapping *file_mapping, const char *file_path, int file_flags, int mapping_flags)
+static int mapFileIntern(FileMapping *file_mapping, const char *file_path, int file_flags, int mapping_flags)
 {
   LARGE_INTEGER file_size;
-
-  // do nothing if already mapped
-  if (file_mapping->addr_ != NULL) {
-      return 0;
-  }
 
   // open file (if not already done)
   if (file_mapping->internal_.file_handle_ == INVALID_HANDLE_VALUE)
@@ -539,7 +527,6 @@ int mapFile(FileMapping *file_mapping, const char *file_path, int file_flags, in
 
   return 0;
 error:
-  closeFileMapping(file_mapping);
   return -1;
 }
 
@@ -777,6 +764,43 @@ void initFileMapping(FileMapping *file_mapping)
   initFileMappingInternal(&file_mapping->internal_);
 }
 
+int mapFile(FileMapping *file_mapping, const char *file_path, int file_flags, int mapping_flags)
+{
+  int ret = 0;
+  size_t old_size_pages = 0;
+
+  // do nothing if already mapped
+  if (file_mapping->addr_ != NULL) {
+      return 0;
+  }
+
+  // remember old size in pages if page cache status array exists
+  if (file_mapping->pages_cache_status_ != NULL) 
+  {
+      old_size_pages = file_mapping->size_pages_;
+  }
+
+  ret = mapFileIntern(file_mapping, file_path, file_flags, mapping_flags);
+  if(ret != 0) 
+  {
+      goto error;
+  }
+
+  if (file_mapping->pages_cache_status_ == NULL || old_size_pages != file_mapping->size_pages_)
+  {
+    file_mapping->pages_cache_status_ = realloc(file_mapping->pages_cache_status_, sizeof(uint8_t) * file_mapping->size_pages_);
+    if (file_mapping->pages_cache_status_ == NULL)
+    {
+      goto error;
+    }
+  }
+
+  return 0;
+error:
+  closeFileMapping(file_mapping);
+  return ret;
+}
+
 static int doFcStateAccess(FileMapping *file_mapping, size_t offset, size_t len, unsigned char *vec)
 {
   uint8_t *current_addr = (uint8_t *)file_mapping->addr_ + offset;
@@ -852,29 +876,11 @@ int getCacheStatusFileRange(FileMapping *file_mapping, size_t offset, size_t len
     return -1;
   }
 
-  // malloc page cache status array if not done yet
-  if (file_mapping->pages_cache_status_ == NULL)
-  {
-    file_mapping->pages_cache_status_ = malloc(sizeof(uint8_t) * file_mapping->size_pages_);
-    if (file_mapping->pages_cache_status_ == NULL)
-    {
-      return -1;
-    }
-  }
-
   return FC_STATE_FN(file_mapping, offset * PAGE_SIZE, len * PAGE_SIZE, file_mapping->pages_cache_status_ + offset);
 }
 
 int getCacheStatusFile(FileMapping *file_mapping)
 {
-  // malloc page cache status array if not done yet
-  file_mapping->pages_cache_status_ = realloc(file_mapping->pages_cache_status_, sizeof(uint8_t) * file_mapping->size_pages_);
-  if (file_mapping->pages_cache_status_ == NULL)
-  {
-    return -1;
-  }
-  
-
   return FC_STATE_FN(file_mapping, 0, file_mapping->size_pages_ * PAGE_SIZE, file_mapping->pages_cache_status_);
 }
 
@@ -915,4 +921,5 @@ void closeFileMapping(void *arg)
   closeMappingOnly(arg);
   closeFileOnly(arg);
   freeFileCacheStatus(arg);
+  
 }

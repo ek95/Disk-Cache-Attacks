@@ -140,7 +140,7 @@ void dynArrayDestroy(DynArray *array, DynArrayDataCallbackFn free_data)
     {
         if(free_data != NULL)
         {
-            for(size_t offset = 0; offset < array->size_ * array->elem_size_; offset += array->elem_size_)
+            for(size_t offset = 0; offset < (array->size_ * array->elem_size_); offset += array->elem_size_)
             {
                 free_data((uint8_t *) array->data_ + offset);
             }

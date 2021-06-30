@@ -40,11 +40,12 @@
 
 // usage advices 
 // directly compatible with linux madvise and posix_fadvise
-#define USAGE_NORMAL 0x00
-#define USAGE_RANDOM 0x01
-#define USAGE_SEQUENTIAL 0x02
-#define USAGE_WILLNEED 0x03
-#define USAGE_DONTNEED 0x04
+#define USAGE_NORMAL MADV_NORMAL
+#define USAGE_RANDOM MADV_RANDOM
+#define USAGE_SEQUENTIAL MADV_SEQUENTIAL
+#define USAGE_WILLNEED MADV_WILLNEED
+#define USAGE_DONTNEED MADV_DONTNEED
+#define USAGE_HUGEPAGE MADV_HUGEPAGE
 
 #define DISK_ACCESS_THRESHOLD_NS (1 * 1000UL) 
 
