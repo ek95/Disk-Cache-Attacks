@@ -9,6 +9,7 @@
     #include <errno.h>
     #include <linux/limits.h>
     #include <sched.h> 
+    #include <time.h>
 
 
     #define OSAL_MAX_PATH_LEN PATH_MAX
@@ -40,6 +41,15 @@
     static inline void osal_sched_yield()
     {
         sched_yield();
+    }
+
+    static inline void osal_sleep_us(size_t microseconds)
+    {
+        struct timespec wait_time = {
+            .tv_sec = microseconds / 1000000UL,
+            .tv_nsec = (microseconds % 1000000UL) * 1000UL
+        };
+        nanosleep(&wait_time, NULL);
     }
 #elif defined(_WIN32)
     #include "windows.h"
@@ -81,6 +91,12 @@
     static inline void osal_sched_yield()
     {
         SwitchToThread();
+    }
+
+    static inline void osal_sleep_us(size_t microseconds)
+    {
+        // windows can only sleep for ms
+        Sleep(microseconds / 1000);
     }
 #else 
   #error "Operating system not supported!"  

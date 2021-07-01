@@ -18,12 +18,15 @@
 #include <sys/uio.h>
 #include <time.h>
 #include <unistd.h>
+#include <assert.h>
 
 #define ARG_COUNT 2
 #define CLUSTER_PAGES 16
 #define CLUSTERS_PER_LINE 4
 #define INPUT_LINE_SIZE 255
 #define DISK_ACCESS_THRESHOLD_NS (1 * 1000UL)
+
+#define ACCESS_USE_PREAD
 
 
 void usageError(char *program_name);
@@ -188,7 +191,11 @@ int main(int argc, char *argv[])
         // access pages
         for (size_t current = offset; current < (offset + range); current += PAGE_SIZE)
         {
+#ifdef ACCESS_USE_PREAD
+          assert(pread(file_mapping.internal_.fd_, (void *) &tmp, 1, current) == 1);
+#else 
           tmp = *((uint8_t *)file_mapping.addr_ + current);
+#endif
         }
       }
       else if (choice == 'm')

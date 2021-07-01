@@ -177,14 +177,14 @@ static int adviseFileUsageIntern(FileMapping *file_mapping, size_t offset, size_
 {
   // only if address exists
   if (file_mapping->addr_ != NULL &&
-      madvise((uint8_t *)(file_mapping->addr_) + offset, len, advice) == -1)
+      madvise((uint8_t *)(file_mapping->addr_) + offset, len, advice) != 0)
   {
     return -1;
   }
 
   // only if fd exists
   if (file_mapping->internal_.fd_ != -1 && 
-      posix_fadvise(file_mapping->internal_.fd_, offset, len, advice) == -1)
+      posix_fadvise(file_mapping->internal_.fd_, offset, len, advice) != 0)
   {
     return -1;
   }

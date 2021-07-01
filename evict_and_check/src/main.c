@@ -332,8 +332,7 @@ void configAttackFromDefines(Attack *attack)
     attack->blocking_set_.def_fillup_size_ = DEF_BS_FILLUP_SIZE;
     attack->blocking_set_.min_available_mem_ = DEF_BS_MIN_AVAILABLE_MEM;
     attack->blocking_set_.max_available_mem_ = DEF_BS_MAX_AVAILABLE_MEM;
-    attack->blocking_set_.evaluation_sleep_time_.tv_sec = DEF_BS_EVALUATION_SLEEP_TIME_S;
-    attack->blocking_set_.evaluation_sleep_time_.tv_nsec = DEF_BS_EVALUATION_SLEEP_TIME_NS;
+    attack->blocking_set_.evaluation_sleep_time_us_ = DEF_BS_EVALUATION_SLEEP_TIME_US;
 
     // Working Set
     attack->working_set_.evaluation_ = DEF_WS_EVALUATION;
@@ -341,17 +340,14 @@ void configAttackFromDefines(Attack *attack)
     attack->working_set_.use_file_api_ = DEF_WS_USE_FILE_API;
     attack->working_set_.search_paths_ = DEF_WS_SEARCH_PATHS;
     attack->working_set_.ps_add_threshold_ = DEF_WS_PS_ADD_THRESHOLD;
-    attack->working_set_.access_sleep_time_.tv_sec = DEF_WS_ACCESS_SLEEP_TIME_S;
-    attack->working_set_.access_sleep_time_.tv_nsec = DEF_WS_ACCESS_SLEEP_TIME_NS;
-    attack->working_set_.evaluation_sleep_time_.tv_sec = DEF_WS_EVALUATION_SLEEP_TIME_S;
-    attack->working_set_.evaluation_sleep_time_.tv_nsec = DEF_WS_EVALUATION_SLEEP_TIME_NS;
+    attack->working_set_.access_sleep_time_us_= DEF_WS_ACCESS_SLEEP_TIME_US;
+    attack->working_set_.evaluation_sleep_time_us_ = DEF_WS_EVALUATION_SLEEP_TIME_US;
     attack->working_set_.profile_update_all_x_evaluations_ = DEF_WS_PROFILE_UPDATE_ALL_X_EVALUATIONS;
     attack->working_set_.access_thread_count_ = DEF_WS_ACCESS_THREAD_COUNT;
 
     // Suppress Set
     attack->suppress_set_.use_file_api_ = DEF_SS_USE_FILE_API;
-    attack->suppress_set_.access_sleep_time_.tv_sec = DEF_SS_ACCESS_SLEEP_TIME_S;
-    attack->suppress_set_.access_sleep_time_.tv_nsec = DEF_SS_ACCESS_SLEEP_TIME_NS;
+    attack->suppress_set_.access_sleep_time_us_ = DEF_SS_ACCESS_SLEEP_TIME_US;
     attack->suppress_set_.access_thread_count_ = DEF_SS_ACCESS_THREAD_COUNT;
 }
 

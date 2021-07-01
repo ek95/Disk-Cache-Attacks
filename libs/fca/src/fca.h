@@ -27,6 +27,9 @@
 #define FCA_IN_LINE_MAX 1024
 #define FCA_LINUX_MEMINFO_PATH "/proc/meminfo"
 #define FCA_LINUX_MEMINFO_AVAILABLE_MEM_TAG "MemAvailable:"
+// MemAvailable does not count in swap
+// https://www.kernel.org/doc/html/latest/filesystems/proc.html
+#define FCA_LINUX_MEMINFO_SWAP_FREE_TAG "SwapFree:"
 #define FCA_WINDOWS_BS_SEMAPHORE_NAME "Local\FCA_BS_CHILD"
 #define FCA_WINDOWS_BS_COMMANDLINE "-b"
 #define FCA_START_WIN_SPAWN_BS_CHILD 0x01
@@ -143,7 +146,7 @@ typedef struct _AttackBlockingSet_
     size_t def_fillup_size_;
     size_t min_available_mem_;
     size_t max_available_mem_;
-    struct timespec evaluation_sleep_time_;
+    size_t evaluation_sleep_time_us_;
     sem_t initialized_sem_;
     uint8_t initialized_;
 } AttackBlockingSet;
@@ -159,6 +162,7 @@ typedef struct _AttackWorkingSet_
     char **search_paths_;
     size_t checked_files_;
     size_t memory_checked_;
+    HashMap scan_added_files_set_;
     // two sets of lists, protected by a read-write lock
     size_t up_to_date_list_set_;
     List resident_files_[2];
@@ -167,8 +171,8 @@ typedef struct _AttackWorkingSet_
     pthread_rwlock_t ws_lists_lock_;
    
     size_t ps_add_threshold_;
-    struct timespec access_sleep_time_;
-    struct timespec evaluation_sleep_time_;
+    size_t access_sleep_time_us_;
+    size_t evaluation_sleep_time_us_;
     size_t profile_update_all_x_evaluations_;
 
     // TODO for windows processes are/should be used
@@ -183,7 +187,7 @@ typedef struct _PageAccessThreadWSData_
     int id_;
     int running_;
     AttackWorkingSet *ws_;
-    struct timespec sleep_time_;
+    size_t sleep_time_us_;
 } PageAccessThreadWSData;
 
 typedef struct _AttackSuppressSet_
@@ -191,7 +195,7 @@ typedef struct _AttackSuppressSet_
     uint64_t use_file_api_: 1;
     uint64_t unused_ : 63; // align to 8bytes
     DynArray suppress_set_;
-    struct timespec access_sleep_time_;
+    size_t access_sleep_time_us_;
     size_t access_thread_count_;
     DynArray access_threads_;
 } AttackSuppressSet;
@@ -201,7 +205,7 @@ typedef struct _PageAccessThreadSSData_
     pthread_t tid_;
     int running_;
     AttackSuppressSet *ss_;
-    struct timespec sleep_time_;
+    size_t sleep_time_us_;
 } PageAccessThreadSSData;
 
 typedef struct _Attack_

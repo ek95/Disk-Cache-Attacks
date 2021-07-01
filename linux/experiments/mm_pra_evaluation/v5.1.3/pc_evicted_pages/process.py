@@ -8,7 +8,7 @@ import numpy
 import operator
 import argparse 
 
-
+EV_CHK_EVICT_FN_NAME = "evictTargets_"
 UNKNOWN_FILE = "!Unknown!"
 MINOR_BITS = 20
 
@@ -61,15 +61,15 @@ while line != "":
     processed_bytes += len(line)
     old_process = process
 
-    # stop collecting information after evictTargetPage returned
-    if line.find("probe_ev_chk:evictTargetPage__return") != -1:
+    # stop collecting information after evictTargets_ returned
+    if line.find("probe_ev_chk:" + EV_CHK_EVICT_FN_NAME + "__return") != -1:
         collect_page_info = False
         eviction_runs_page_infos.append(evicted_page_infos)
         eviction_runs_file_heatmap.append(file_heatmap)
         line = trace_file.readline()
         continue
-    # start of evictTargetPage function, collect information about pages evicted by the mm
-    elif line.find("probe_ev_chk:evictTargetPage") != -1:
+    # start of evictTargets_ function, collect information about pages evicted by the mm
+    elif line.find("probe_ev_chk:" + EV_CHK_EVICT_FN_NAME) != -1:
         collect_page_info = True
         target_page_evicted = False
         eviction_runs_statistics["pc_evictions_before_target"].append(0)
