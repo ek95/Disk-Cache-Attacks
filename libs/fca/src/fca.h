@@ -120,6 +120,8 @@ typedef struct _AttackEvictionSet_
     DynArray access_threads_;
     sem_t worker_start_sem_;
     sem_t worker_join_sem_;
+    pthread_mutex_t workers_targets_check_lock_;
+    uint8_t workers_targets_evicted_;
     // public statistics
     size_t last_eviction_time_ns_;
     ssize_t last_eviction_accessed_memory_bytes_;

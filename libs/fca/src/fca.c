@@ -260,6 +260,7 @@ int initAttackEvictionSet(AttackEvictionSet *es)
 {
     memset(es, 0, sizeof(AttackEvictionSet));
     initFileMapping(&es->mapping_);
+
     // only used if access threads are used
     if (sem_init(&es->worker_start_sem_, 0, 0) != 0)
     {
@@ -271,16 +272,23 @@ int initAttackEvictionSet(AttackEvictionSet *es)
     }
     // can not fail if no space is reserved
     dynArrayInit(&es->access_threads_, sizeof(PageAccessThreadESData), 0);
+    if(pthread_mutex_init(&es->workers_targets_check_lock_, NULL) != 0)
+    {
+        return -1;
+    }
 
     return 0;
 }
 
 int closeAttackEvictionSet(AttackEvictionSet *es)
 {
+    // only used if access threads are used
+    pthread_mutex_destroy(&es->workers_targets_check_lock_);
     // close worker threads
     dynArrayDestroy(&es->access_threads_, closePageAccessThreadESData);
     sem_destroy(&es->worker_start_sem_);
     sem_destroy(&es->worker_join_sem_);
+    
     closeFileMapping(&es->mapping_);
     if (es->eviction_file_path_abs_ != NULL)
     {
@@ -327,7 +335,10 @@ int initAttackBlockingSet(AttackBlockingSet *bs)
 
 int closeAttackBlockingSet(AttackBlockingSet *bs)
 {
+    // could hang somewhere
+    pthread_cancel(bs->manager_thread_);
     pthread_join(bs->manager_thread_, NULL);
+    // stop fillup processes
     dynArrayDestroy(&bs->fillup_processes_, closeFillUpProcess);
     sem_destroy(&bs->initialized_sem_);
 
@@ -360,9 +371,11 @@ int initAttackWorkingSet(AttackWorkingSet *ws)
 
 int closeAttackWorkingSet(AttackWorkingSet *ws)
 {
+    // could hang somewhere
+    pthread_cancel(ws->manager_thread_);
+    pthread_join(ws->manager_thread_, NULL);
     // stop worker threads
     dynArrayDestroy(&ws->access_threads_, closePageAccessThreadWSData);
-    pthread_join(ws->manager_thread_, NULL);
     // only closeCachedFile from active list
     // other ones are basically just copy with old resident pages list
     listDestroy(&ws->resident_files_[ws->up_to_date_list_set_], closeCachedFile);
@@ -1251,17 +1264,11 @@ ssize_t evictTargetsThreads_(Attack *attack, TargetsEvictedFn targets_evicted_fn
     int eviction_result = 1;
     ssize_t accessed_mem_sum = 0;
 
+    // reset memory
+    attack->eviction_set_.workers_targets_evicted_ = 0;
+
     // flag eviction running
     __atomic_store_n(&eviction_running, 1, __ATOMIC_RELAXED);
-
-    // prepare worker thread arguments
-    for (size_t t = 0; t < attack->eviction_set_.access_thread_count_; t++)
-    {
-        PageAccessThreadESData *thread_data = dynArrayGet(&attack->eviction_set_.access_threads_, t);
-        // function for eviction stop condition
-        thread_data->targets_evicted_fn_ = targets_evicted_fn;
-        thread_data->targets_evicted_arg_ptr_ = targets_evicted_arg_ptr;
-    }
     // resume worker threads
     for (size_t t = 0; t < attack->eviction_set_.access_thread_count_; t++)
     {
@@ -1272,17 +1279,7 @@ ssize_t evictTargetsThreads_(Attack *attack, TargetsEvictedFn targets_evicted_fn
         }
     }
 
-    // wait until eviction is done
-    while(1)
-    {
-        if(targets_evicted_fn(targets_evicted_arg_ptr)) 
-        {
-            break;
-        }
-        osal_sched_yield();
-    }
-    // flag eviction done
-    __atomic_store_n(&eviction_running, 0, __ATOMIC_RELAXED);
+    // eviction is running
 
     // wait for completion of the worker threads
     for (size_t t = 0; t < attack->eviction_set_.access_thread_count_; t++)
@@ -1293,6 +1290,7 @@ ssize_t evictTargetsThreads_(Attack *attack, TargetsEvictedFn targets_evicted_fn
             return -1;
         }
     }
+    __atomic_store_n(&eviction_running, 0, __ATOMIC_RELAXED);
     // get worker thread data
     for (size_t t = 0; t < attack->eviction_set_.access_thread_count_; t++)
     {
@@ -1340,6 +1338,7 @@ int spawnESThreads(Attack *attack)
         thread_data->start_sem_ = &attack->eviction_set_.worker_start_sem_;
         thread_data->join_sem_ = &attack->eviction_set_.worker_join_sem_;
         thread_data->targets_evicted_fn_ = targetsEvictedEsThreadsFn;
+        thread_data->targets_evicted_arg_ptr_ = attack;
         pos += access_range_per_thread;
     }
     // prepare thread_data object for last thread
@@ -1352,6 +1351,7 @@ int spawnESThreads(Attack *attack)
     thread_data->start_sem_ = &attack->eviction_set_.worker_start_sem_;
     thread_data->join_sem_ = &attack->eviction_set_.worker_join_sem_;
     thread_data->targets_evicted_fn_ = targetsEvictedEsThreadsFn;
+    thread_data->targets_evicted_arg_ptr_ = attack;
 
     // spin up worker threads
     for (size_t t = 0; t < attack->eviction_set_.access_thread_count_; t++)
@@ -1373,15 +1373,40 @@ cleanup:
     return ret;
 }
 
-int targetsEvictedEsThreadsFn(void *arg) 
+int targetsEvictedEsThreadsFn(void *arg)
 {
-    (void) arg;
-
-    if(!__atomic_load_n(&eviction_running, __ATOMIC_RELAXED)) 
+    Attack *attack = arg;
+    // we have multiple threads which access this function
+    // but only one should carry out the actual check at one time
+ 
+    // last result says already that we are evicted -> stop immediately
+    if(__atomic_load_n(&attack->eviction_set_.workers_targets_evicted_, __ATOMIC_RELAXED))
     {
         return 1;
     }
+ 
+    // ok, check if we can get the lock 
 
+    // did not work -> to aggressive?
+    //if(pthread_mutex_trylock(&attack->eviction_set_.workers_targets_check_lock_) == 0)
+    
+    if(pthread_mutex_lock(&attack->eviction_set_.workers_targets_check_lock_) == 0)
+    {
+        // we have the lock check
+        if (hashMapForEach(&attack->targets_, targetsHmCacheStatusCB, (void *) 1) == HM_FE_OK)
+        {
+            __atomic_store_n(&attack->eviction_set_.workers_targets_evicted_, 1, __ATOMIC_RELAXED);
+            pthread_mutex_unlock(&attack->eviction_set_.workers_targets_check_lock_);
+            return 1;
+        }
+        else 
+        {
+            pthread_mutex_unlock(&attack->eviction_set_.workers_targets_check_lock_);
+            return 0;
+        }
+    }
+
+    // could not get lock, just behave like target is still cached
     return 0;
 }
 
@@ -1591,8 +1616,8 @@ size_t parseAvailableMem(AttackBlockingSet *bs)
 {
     FILE *meminfo_file = NULL;
     char line[LINE_MAX] = {0};
-    ssize_t available_mem_kb = 0;
-    ssize_t swap_free_kb = 0;
+    ssize_t available_mem_kb = -1;
+    ssize_t swap_free_kb = -1;
 
     // open meminfo file
     meminfo_file = fopen(FCA_LINUX_MEMINFO_PATH, "r");
@@ -1629,6 +1654,11 @@ size_t parseAvailableMem(AttackBlockingSet *bs)
                 break;
             }
         }
+
+        if(available_mem_kb != -1 && swap_free_kb != -1)
+        {
+            break;
+        }
     }
 
     if (available_mem_kb == -1 || swap_free_kb == -1)
@@ -1641,7 +1671,7 @@ size_t parseAvailableMem(AttackBlockingSet *bs)
     // cleanup
     fclose(meminfo_file);
     // in bytes
-    return available_mem_kb * 1024 + swap_free_kb * 1024;
+    return available_mem_kb + swap_free_kb;
 }
 
 // changes line !
@@ -1719,7 +1749,7 @@ int blockRAM(AttackBlockingSet *bs, size_t fillup_size)
         DEBUG_PRINT((DEBUG FAIL BS_TAG "Error " OSAL_EC_FS " at mmap...\n", OSAL_EC));
         goto error;
     }
-    if (sem_init(sem, 1, 0))
+    if (sem_init(sem, 1, 0) != 0)
     {
         DEBUG_PRINT((DEBUG FAIL BS_TAG "Error " OSAL_EC_FS " at sem_init...\n", OSAL_EC));
         goto error;

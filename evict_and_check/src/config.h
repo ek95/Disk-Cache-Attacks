@@ -17,7 +17,7 @@
 #define DEF_ES_USE_FILE_API 0
 #define DEF_ES_EVICTION_FILE_PATH "eviction.ram"
 // allow it to be max. 1ms
-#define DEF_TARGETS_CHECK_ALL_X_BYTES (1024 * 4096ULL)
+#define DEF_TARGETS_CHECK_ALL_X_BYTES (128 * 4096ULL)
 // at least once inbetween eviction set filled file LRU lists
 // (heuristic: min available memory / 2)
 #define DEF_WS_ACCESS_ALL_X_BYTES  0 //(16000 * 4096ULL) //(125829 * 4096ULL)//(125829 * 4096ULL)
@@ -29,12 +29,12 @@
 #define DEF_ES_ACCESS_THREAD_COUNT 6
 
 // Blocking Set
-#define DEF_BS_FILLUP_SIZE (16 * 1024 * 4096ULL)
+#define DEF_BS_FILLUP_SIZE (8 * 1024 * 4096ULL)
 // good guess might be made by looking at the watermarks in /proc/zoneinfo
 // 6% - 8%
-#define DEF_BS_MIN_AVAILABLE_MEM (256 * 1024 * 1024ULL)//(251658 * 4096ULL)
+#define DEF_BS_MIN_AVAILABLE_MEM (128 * 1024 * 1024ULL)//(251658 * 4096ULL)
 #define DEF_BS_MAX_AVAILABLE_MEM (DEF_BS_MIN_AVAILABLE_MEM + 2 * DEF_BS_FILLUP_SIZE)//(335545 * 4096ULL)
-#define DEF_BS_EVALUATION_SLEEP_TIME_US (0)
+#define DEF_BS_EVALUATION_SLEEP_TIME_US (1000)
 
 // Working Set
 #define DEF_WS_EVALUATION 0
