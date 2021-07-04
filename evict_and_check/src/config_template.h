@@ -1,13 +1,15 @@
 #ifndef _CONFIG_H_
 #define _CONFIG_H_
 
+#include "filemap.h"
+
 // General
 #define DEF_USE_ATTACK_BS /*USE_ATTACK_BS*/
 #define DEF_USE_ATTACK_WS /*USE_ATTACK_WS*/
 #define DEF_USE_ATTACK_SS /*USE_ATTACK_SS*/
 
 // mincore by default
-#define DEF_FC_STATE_SOURCE 0
+#define DEF_FC_STATE_SOURCE FC FC_SOURCE_MINCORE
 // readahead size (/sys/block/xxx/queue/read_ahead_kb)
 #define DEF_FA_WINDOW_SIZE_PAGES 32
 

@@ -1,8 +1,8 @@
 #!/bin/bash
 
-EV_CHK_DIR_REL="../../../../../evict_and_check/build/bin"
+EV_CHK_DIR_REL="../../../../../evict_and_check/bin"
 EV_CHK_BINARY="ev_chk"
-EV_CHK_EVICT_FN_NAME="evictTargets_"
+EV_CHK_EVICT_FN_NAME="evictTargets__"
 EV_CHK_PATH=$EV_CHK_DIR_REL/$EV_CHK_BINARY
 TARGET_BINARY=$(realpath "./test.so")
 TARGET_OFFSET=1
@@ -10,7 +10,7 @@ RAW_TRACE_FILE="raw_trace.txt"
 TRACE_FILE="trace.csv"
 DATA_PROCESSING_SCRIPT="./process.py"
 
-set -e
+#set -e
 
 # delete perf probes (if existing)
 #-------------------------------------------------------------------------------
@@ -36,7 +36,8 @@ echo 100000 > sudo tee /proc/sys/kernel/perf_event_max_sample_rate
 # -e event to record
 # -a on all cores
 # -p PID can be used to limit to pid
-perf record -g -m 16M -e probe:__delete_from_page_cache -e probe_ev_chk:evictTargetPage -e probe_ev_chk:evictTargetPage__return -a bash -c "cd $EV_CHK_DIR_REL;./$EV_CHK_BINARY $TARGET_BINARY $TARGET_OFFSET"
+printf "${TARGET_BINARY}\n${TARGET_OFFSET} 0\n\n" > "${EV_CHK_DIR_REL}/eval.conf"
+perf record -g -m 16M -e probe:__delete_from_page_cache -e probe_ev_chk:${EV_CHK_EVICT_FN_NAME} -e probe_ev_chk:${EV_CHK_EVICT_FN_NAME}__return -a bash -c "cd $EV_CHK_DIR_REL;./$EV_CHK_BINARY eval.conf | tee ev_chk.log" 
 
 # convert collected data to log file
 perf script -F comm,tid,time,event,trace,ip,sym > $RAW_TRACE_FILE

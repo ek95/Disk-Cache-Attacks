@@ -46,8 +46,8 @@
     static inline void osal_sleep_us(size_t microseconds)
     {
         struct timespec wait_time = {
-            .tv_sec = microseconds / 1000000UL,
-            .tv_nsec = (microseconds % 1000000UL) * 1000UL
+            .tv_sec = microseconds / 1000000ULL,
+            .tv_nsec = (microseconds % 1000000ULL) * 1000ULL
         };
         nanosleep(&wait_time, NULL);
     }

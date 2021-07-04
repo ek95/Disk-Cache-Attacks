@@ -8,7 +8,7 @@ import numpy
 import operator
 import argparse 
 
-EV_CHK_EVICT_FN_NAME = "evictTargets_"
+EV_CHK_EVICT_FN_NAME = "evictTargets__"
 UNKNOWN_FILE = "!Unknown!"
 MINOR_BITS = 20
 
@@ -61,14 +61,14 @@ while line != "":
     processed_bytes += len(line)
     old_process = process
 
-    # stop collecting information after evictTargets_ returned
+    # stop collecting information after evictTargets__ returned
     if line.find("probe_ev_chk:" + EV_CHK_EVICT_FN_NAME + "__return") != -1:
         collect_page_info = False
         eviction_runs_page_infos.append(evicted_page_infos)
         eviction_runs_file_heatmap.append(file_heatmap)
         line = trace_file.readline()
         continue
-    # start of evictTargets_ function, collect information about pages evicted by the mm
+    # start of evictTargets__ function, collect information about pages evicted by the mm
     elif line.find("probe_ev_chk:" + EV_CHK_EVICT_FN_NAME) != -1:
         collect_page_info = True
         target_page_evicted = False
@@ -143,11 +143,11 @@ while line != "":
                 returncode = debugfs_p.close()
                 if returncode is None and "Inode\tPathname" in output_lines[0] and len(output_lines) > 2:
                     file = output_lines[1].split("\t")[1]
-                    # populate cache for fast filename retrieval
-                    if device_nr not in device_inode_file_cache:
-                        device_inode_file_cache[device_nr] = {}
-                    device_inode_file_cache[device_nr][inode] = file
                 tries += 1
+            # populate cache for fast filename retrieval
+            if device_nr not in device_inode_file_cache:
+                device_inode_file_cache[device_nr] = {}
+            device_inode_file_cache[device_nr][inode] = UNKNOWN_FILE if file is None else file
 
         if file is None:
             print("Warning: Filename could not have been gathered:")
@@ -202,7 +202,7 @@ for r in range(len(eviction_runs_statistics["pc_evictions_before_target"])):
     print("--------------------------------------------------------------------------------")
     print("Page evictions before target: %d (%d MiB)" % (pc_evictions_before_target, pc_evictions_before_target * 
                                                          4096 / 1024 / 1024))
-    print("Page evictions affter target: %d (%d MiB)" % (pc_evictions_after_target, pc_evictions_after_target * 
+    print("Page evictions after target: %d (%d MiB)" % (pc_evictions_after_target, pc_evictions_after_target * 
                                                          4096 / 1024 / 1024))
     print("--------------------------------------------------------------------------------")
     # File heatmap

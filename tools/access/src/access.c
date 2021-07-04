@@ -1,18 +1,16 @@
-#define _GNU_SOURCE
-
-#include "filemap.h"
-#include <errno.h>
-#include <fcntl.h>
-#include <limits.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/mman.h>
-#include <sys/stat.h>
-#include <sys/types.h>
-#include <time.h>
+#include <errno.h>
+#include <limits.h>
+#ifdef __linux
 #include <unistd.h>
+#elif defined(_WIN32)
+#include "Windows.h"
+#endif
+#include "osal.h"
+#include "filemap.h"
 
 #define ARG_COUNT 5
 #define TARGET_FILE_ARG 1
@@ -29,9 +27,8 @@ int main(int argc, char *argv[])
   int ret = 0;
   char *endptr = NULL;
   size_t target_page = 0;
-  size_t access_period = 0;
+  size_t access_period_ms = 0;
   size_t access_count = 0;
-  struct timespec wait_time;
   FileMapping file_mapping;
   volatile uint8_t tmp = 0;
   (void)tmp;
@@ -44,12 +41,19 @@ int main(int argc, char *argv[])
     goto error;
   }
 
-  PAGE_SIZE = sysconf(_SC_PAGESIZE);
-  if (PAGE_SIZE == -1)
-  {
-    printf("Error (%s) at sysconf\n", strerror(errno));
-    goto error;
-  }
+    // get system page size
+#ifdef __linux
+    PAGE_SIZE = sysconf(_SC_PAGESIZE);
+    if (PAGE_SIZE == -1)
+    {
+        printf("Error " OSAL_EC_FS " at syscconf...\n", OSAL_EC);
+        goto error;
+    }
+#elif defined _WIN32
+    SYSTEM_INFO system_info;
+    GetSystemInfo(&system_info);
+    PAGE_SIZE = system_info.dwPageSize;
+#endif
 
   target_page = strtoul(argv[TARGET_PAGE_ARG], &endptr, 10);
   if (endptr == argv[TARGET_PAGE_ARG] || *endptr != 0 || (target_page == ULONG_MAX && errno == ERANGE))
@@ -57,8 +61,8 @@ int main(int argc, char *argv[])
     usageError(argv[0]);
     goto error;
   }
-  access_period = strtoul(argv[ACCESS_PERIOD_MS_ARG], &endptr, 10);
-  if (endptr == argv[ACCESS_PERIOD_MS_ARG] || *endptr != 0 || (access_period == ULONG_MAX && errno == ERANGE))
+  access_period_ms = strtoul(argv[ACCESS_PERIOD_MS_ARG], &endptr, 10);
+  if (endptr == argv[ACCESS_PERIOD_MS_ARG] || *endptr != 0 || (access_period_ms == ULONG_MAX && errno == ERANGE))
   {
     usageError(argv[0]);
     goto error;
@@ -70,13 +74,10 @@ int main(int argc, char *argv[])
     goto error;
   }
 
-  wait_time.tv_sec = access_period / 1000UL;
-  wait_time.tv_nsec = (access_period % 1000UL) * 1000000UL;
-
   printf("Mapping file %s into memory...\n", argv[1]);
   if (mapFile(&file_mapping, argv[TARGET_FILE_ARG], FILE_ACCESS_READ, MAPPING_ACCESS_READ | MAPPING_ACCESS_EXECUTE | MAPPING_SHARED) != 0)
   {
-    printf("Error (%s) at mapFile for: %s ...\n", strerror(errno), argv[TARGET_FILE_ARG]);
+    printf("Error " OSAL_EC_FS " at mapFile...\n", OSAL_EC);
     goto error;
   }
 
@@ -91,7 +92,7 @@ int main(int argc, char *argv[])
     printf("%zu. Access\n", access_nr + 1);
     tmp = *((uint8_t *)file_mapping.addr_ + target_page * PAGE_SIZE);
 
-    nanosleep(&wait_time, NULL);
+    osal_sleep_us(access_period_ms * 1000);
   }
 
   goto cleanup;

@@ -26,7 +26,7 @@
 #define INPUT_LINE_SIZE 255
 #define DISK_ACCESS_THRESHOLD_NS (1 * 1000UL)
 
-#define ACCESS_USE_PREAD
+//#define ACCESS_USE_PREAD
 
 
 void usageError(char *program_name);

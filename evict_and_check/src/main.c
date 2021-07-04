@@ -5,24 +5,11 @@
  * virtual memory and shared memory. To run this demo program you should have
  * swapping disabled.
  *
- * Usage: ./ev_chk [targets config file] <-s> <-e executable> <-t file>
+ * Usage: ./ev_chk [targets config file]
  * 
  *  [targets config file]
  *      File containing the target pages from shared files to which accesses
  *      should be monitored.
- * 
- *  -s (optional)
- *      Collects statistics about eviction attempts as csv. 
- *      (accessed eviction memory -> "histogram_mem.csv", 
- *      eviction runtime -> "histogram_time.csv") 
- * 
- *  -e executable (optional) 
- *      Allows to specify an executable which is signaled in case of 
- *      an detected event (SIGUSR1).
- * 
- *  -t file (optional)
- *      Collects information about detected events as csv.
- *      (count, timestamp, eviction runtime, accessed eviction memory)
  *
  * NOTE For evaluation with the attack working set enabled the attacker binary should be stored
  *      somewhere in the search paths so that it is also added to the attack working set.
@@ -70,7 +57,8 @@ const size_t SWITCHES_ARG_COUNT[SWITCHES_COUNT] = {1, 1};
                   "\t\tshould be monitored.\n\n"                                                            \
                   "\t-e executable (optional)\n"                                                            \
                   "\t\tAllows to specify an executable which is signaled in case of\n"                      \
-                  "\t\tan detected event (SIGUSR1).\n\n"                                       
+                  "\t\tan detected event (SIGUSR1).\n\n"    
+#define SAMPLE_WAIT_TIME_US (100)                                   
 
 // output TAGS with ANSI colors
 #define PENDING "\x1b[34;1m[PENDING]\x1b[0m "
@@ -97,17 +85,29 @@ static int running = 1;
 /*-----------------------------------------------------------------------------
  * SIGNAL HANDLERS
  */
+#ifdef __linux
 static void quitHandler(int signal)
 {
     // __ATOMIC_RELAXED = no thread ordering constraints
     __atomic_store_n(&running, 0, __ATOMIC_RELAXED);
 }
+#elif defined (_WIN32)
+static BOOL WINAPI CtrlHandler(DWORD ctrl_type)
+{
+    if(ctrl_type == CTRL_C_EVENT)
+    {
+        // __ATOMIC_RELAXED = no thread ordering constraints
+        __atomic_store_n(&running, 0, __ATOMIC_RELAXED);
+        return TRUE;
+    }   
+    return FALSE;
+}
+#endif
 
 /*-----------------------------------------------------------------------------
  * CODE
  */
-// TODO windows pca init add bs flag if started for blocking set
-//      same for working set
+// TODO  windows
 int main(int argc, char *argv[])
 {
     // general variables
@@ -131,21 +131,12 @@ int main(int argc, char *argv[])
     // variables necessary for general attack function
     Attack attack = {0};
     FileMapping self_mapping = {0};
-    FileMapping event_exec_mapping = {0};
-    pid_t event_child = 0;
     size_t hit_counter = 0;
     size_t sum_eviction_accessed_memory = 0;
     size_t sum_eviction_time_ns = 0;
 
-    struct timespec wait_time = 
-    {
-        .tv_sec = 0,
-        .tv_nsec = 10 * 1000
-    };
-
     // initialise file mappings
     initFileMapping(&self_mapping);
-    initFileMapping(&event_exec_mapping);
     // initialise random generator
     srand(time(NULL));
 
@@ -171,7 +162,11 @@ int main(int argc, char *argv[])
         goto error;
     }
 #elif defined(_WIN32)
-    // TODO
+    if (!SetConsoleCtrlHandler(CtrlHandler, TRUE)) 
+    {
+        printf(FAIL "Error " OSAL_EC_FS " at SetConsoleCtrlHandler...\n", OSAL_EC);
+        goto error;   
+    }
 #endif
 
     // initialising attack
@@ -191,7 +186,7 @@ int main(int argc, char *argv[])
         goto error;
     }
 
-    // TODO windows virtual lock
+    // TODO WINDOWS virtual lock
     // mlock self
     ret = mlock(self_mapping.addr_, self_mapping.size_);
     if (ret != 0)
@@ -199,39 +194,6 @@ int main(int argc, char *argv[])
         printf(WARNING "Error " OSAL_EC_FS " mlock for: %s...\n", OSAL_EC, argv[0]);
     }
 #endif
-
-    // optional: map and mlock event binary
-    if (parsed_cmd_line.switch_args_[EXT_EVENT_APP_SWITCH][0] != NULL)
-    {
-        // map event binary
-        if (mapFile(&event_exec_mapping, parsed_cmd_line.switch_args_[EXT_EVENT_APP_SWITCH][0],
-            FILE_ACCESS_READ | FILE_NOATIME, MAPPING_SHARED | MAPPING_ACCESS_READ) != 0)
-        {
-            printf(FAIL "Error " OSAL_EC_FS " at mapFile for: %s...\n", OSAL_EC, parsed_cmd_line.switch_args_[EXT_EVENT_APP_SWITCH][0]);
-            goto error;
-        }
-
-        ret = mlock(event_exec_mapping.addr_, event_exec_mapping.size_);
-        if (ret != 0)
-        {
-            printf(FAIL "Error " OSAL_EC_FS " at mlock for: %s...\n", OSAL_EC, parsed_cmd_line.switch_args_[EXT_EVENT_APP_SWITCH][0]);
-        }
-
-        // TODO Windows create process
-        event_child = fork();
-        if (event_child < 0)
-        {
-            printf(FAIL "Error " OSAL_EC_FS " at fork...\n", OSAL_EC);
-            goto error;
-        }
-        else if (event_child == 0)
-        {
-            char *event_argv[] = {NULL};
-            execv(parsed_cmd_line.switch_args_[EXT_EVENT_APP_SWITCH][0], event_argv);
-            printf(FAIL "Error " OSAL_EC_FS " at execv for: %s...\n", OSAL_EC, parsed_cmd_line.switch_args_[EXT_EVENT_APP_SWITCH][0]);
-            goto error;
-        }
-    }
 
     // sample configuration
     configAttackFromDefines(&attack);
@@ -279,9 +241,7 @@ int main(int argc, char *argv[])
             printSampleTrace(&attack);
         }
 
-        // TODO windows
-        nanosleep(&wait_time, NULL);
-        //osal_sched_yield();
+        osal_sleep_us(SAMPLE_WAIT_TIME_US);
     }
 
     if (hit_counter > 0)

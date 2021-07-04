@@ -205,7 +205,7 @@ class SinglePageHitClassifier(Classifier):
         distinguishable_by_miss = events_ch_ratios - np.array([np.min(np.delete(
             events_ch_ratios, i, axis=0), axis=0) for i in range(events_ch_ratios.shape[0])])
 
-        # events are similar if neither distinguishable by hit nor by miss with wanted accuracy
+        # events are similar if neither distinguishable by hit nor by miss with wanted threshold
         return (np.all(distinguishable_by_hit <= self.fitness_threshold_train_) and 
             np.all(-distinguishable_by_miss <= self.fitness_threshold_train_))
 

@@ -24,6 +24,7 @@ set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
 # external libs
+include_directories(../osal/src)
 include_directories(../dynarray/src)
 add_subdirectory(../dynarray lib/dynarray)
 include_directories(../list/src)

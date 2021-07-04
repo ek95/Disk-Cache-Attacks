@@ -144,6 +144,7 @@ typedef struct _PageAccessThreadESData_
 typedef struct _AttackBlockingSet_
 {
     pthread_t manager_thread_;
+    int running_;
     DynArray fillup_processes_;
     size_t def_fillup_size_;
     size_t min_available_mem_;
@@ -161,6 +162,7 @@ typedef struct _AttackWorkingSet_
     uint64_t unused_ : 61; // align to 8bytes
 
     pthread_t manager_thread_;
+    int running_;
     char **search_paths_;
     size_t checked_files_;
     size_t memory_checked_;
@@ -188,7 +190,7 @@ typedef struct _PageAccessThreadWSData_
     pthread_t tid_;
     int id_;
     int running_;
-    AttackWorkingSet *ws_;
+    Attack *attack_;
     size_t sleep_time_us_;
 } PageAccessThreadWSData;
 
