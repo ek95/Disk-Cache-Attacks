@@ -5,11 +5,14 @@
  * virtual memory and shared memory. To run this demo program you should have
  * swapping disabled.
  *
- * Usage: ./ev_chk [targets config file]
+ * Usage: ./ev_chk [targets config file] <-v>
  * 
  *  [targets config file]
  *      File containing the target pages from shared files to which accesses
  *      should be monitored.
+ * 
+ *  <-v>
+ *      Verbose, show more information.
  *
  * NOTE For evaluation with the attack working set enabled the attacker binary should be stored
  *      somewhere in the search paths so that it is also added to the attack working set.
@@ -38,26 +41,24 @@
 #include "fca.h"
 #include "osal.h"
 
-
 /*-----------------------------------------------------------------------------
  * DEFINES
  */
 
 // defines used for parsing command line arguments
 #define SWITCHES_COUNT 2
-#define EXT_EVENT_APP_SWITCH 0
+#define VERBOSE_SWITCH 0
 #define FCA_WINDOWS_BS_SWITCH 1
-const char *SWITCHES_STR[SWITCHES_COUNT] = {"-e", "-b"};
-const size_t SWITCHES_ARG_COUNT[SWITCHES_COUNT] = {1, 1};
+const char *SWITCHES_STR[SWITCHES_COUNT] = {"-v", "-b"};
+const size_t SWITCHES_ARG_COUNT[SWITCHES_COUNT] = {0, 1};
 #define MANDATORY_ARGS 1
 #define TARGETS_CONFIG_PATH_ARG 0
-#define USAGE_MSG "Usage: %s [targets configuration file] <-e executable> \n\n"                             \
+#define USAGE_MSG "Usage: %s [targets configuration file] <-v> \n\n"                                        \
                   "\t[target configuration file]\n"                                                         \
                   "\t\tConfiguration file which contains the shared file-page pairs to which accesses\n"    \
                   "\t\tshould be monitored.\n\n"                                                            \
-                  "\t-e executable (optional)\n"                                                            \
-                  "\t\tAllows to specify an executable which is signaled in case of\n"                      \
-                  "\t\tan detected event (SIGUSR1).\n\n"    
+                  "\t-v\n"                                                                                  \
+                  "\t\tVerbose, show more information.\n\n"                                                 
 #define SAMPLE_WAIT_TIME_US (100)                                   
 
 // output TAGS with ANSI colors
@@ -180,19 +181,24 @@ int main(int argc, char *argv[])
 #ifdef MLOCK_SELF
     // map self
     if (mapFile(&self_mapping, argv[0], 
-        FILE_ACCESS_READ | FILE_NOATIME, MAPPING_SHARED | MAPPING_ACCESS_READ) != 0)
+        FILE_ACCESS_READ | FILE_NOATIME, MAPPING_SHARED | MAPPING_ACCESS_READ | MAPPING_ACCESS_EXECUTE) != 0)
     {
         printf(FAIL "Error " OSAL_EC_FS " at mapFile for: %s...\n", OSAL_EC, argv[0]);
         goto error;
     }
-
-    // TODO WINDOWS virtual lock
     // mlock self
+#ifdef __linux
     ret = mlock(self_mapping.addr_, self_mapping.size_);
     if (ret != 0)
     {
         printf(WARNING "Error " OSAL_EC_FS " mlock for: %s...\n", OSAL_EC, argv[0]);
     }
+#elif defined(_WIN32)
+    if(!VirtualLock(self_mapping.addr_, self_mapping.size_))
+    {
+        printf(WARNING "Error " OSAL_EC_FS " VirtualLock for: %s...\n", OSAL_EC, argv[0]);
+    }
+#endif
 #endif
 
     // sample configuration
@@ -211,11 +217,14 @@ int main(int argc, char *argv[])
         printf(FAIL "Error " OSAL_EC_FS " at fcaStart...\n", OSAL_EC);
         goto error;
     }
-    printf(INFO "Initial working set now consists of %zu files (%zu bytes mapped).\n",
-                attack.working_set_.resident_files_[attack.working_set_.up_to_date_list_set_].count_,
-                attack.working_set_.mem_in_ws_[attack.working_set_.up_to_date_list_set_]);
 
-    printf(OK "Ready...\n");
+    if (parsed_cmd_line.switch_states_[VERBOSE_SWITCH])
+    {
+        printf(INFO "Initial working set now consists of %zu files (%zu bytes mapped).\n",
+            attack.working_set_.resident_files_[attack.working_set_.up_to_date_list_set_].count_,
+            attack.working_set_.mem_in_ws_[attack.working_set_.up_to_date_list_set_]);
+        printf(OK "Ready...\n\n");
+    }
     // main event loop
     while (running)
     {
@@ -234,17 +243,19 @@ int main(int argc, char *argv[])
             sum_eviction_accessed_memory += attack.eviction_set_.last_eviction_accessed_memory_bytes_;
             hit_counter++;
 
-            printf(INFO "Hit %zu (eviction time: %zu ns, accessed eviction set: %zu kB)\n", 
-                hit_counter, attack.eviction_set_.last_eviction_time_ns_, 
-                attack.eviction_set_.last_eviction_accessed_memory_bytes_ / 1024);
+            if (parsed_cmd_line.switch_states_[VERBOSE_SWITCH])
+                printf(INFO "Hit %zu (eviction time: %zu ns, accessed eviction set: %zu kB)\n", 
+                    hit_counter, attack.eviction_set_.last_eviction_time_ns_, 
+                    attack.eviction_set_.last_eviction_accessed_memory_bytes_ / 1024);
             // print page trace
             printSampleTrace(&attack);
+            printf("\n");
         }
 
         osal_sleep_us(SAMPLE_WAIT_TIME_US);
     }
 
-    if (hit_counter > 0)
+    if (hit_counter > 0 && parsed_cmd_line.switch_states_[VERBOSE_SWITCH])
     {
         printf(INFO "Mean time to eviction per hit: %f ns..\n", (double)sum_eviction_time_ns / hit_counter);
         printf(INFO "Mean accessed eviction set per hit: %f kB..\n", (double)sum_eviction_accessed_memory / 1024 / hit_counter);
@@ -266,6 +277,7 @@ cleanup:
     return ret;
 }
 
+#ifdef __linux
 void configAttackFromDefines(Attack *attack)
 {
     // General
@@ -281,10 +293,10 @@ void configAttackFromDefines(Attack *attack)
     attack->eviction_set_.use_access_threads_ = DEF_ES_USE_ACCESS_THREADS;
     attack->eviction_set_.use_file_api_ = DEF_ES_USE_FILE_API;
     attack->eviction_set_.eviction_file_path_ = DEF_ES_EVICTION_FILE_PATH;
-    attack->eviction_set_.targets_check_all_x_bytes_ = DEF_TARGETS_CHECK_ALL_X_BYTES;
-    attack->eviction_set_.ws_access_all_x_bytes_ = DEF_WS_ACCESS_ALL_X_BYTES;
-    attack->eviction_set_.ss_access_all_x_bytes_ = DEF_SS_ACCESS_ALL_X_BYTES;
-    attack->eviction_set_.prefetch_es_bytes_ = DEF_PREFETCH_ES_BYTES;
+    attack->eviction_set_.targets_check_all_x_bytes_ = DEF_ES_TARGETS_CHECK_ALL_X_BYTES;
+    attack->eviction_set_.ws_access_all_x_bytes_ = DEF_ES_WS_ACCESS_ALL_X_BYTES;
+    attack->eviction_set_.ss_access_all_x_bytes_ = DEF_ES_SS_ACCESS_ALL_X_BYTES;
+    attack->eviction_set_.prefetch_es_bytes_ = DEF_ES_PREFETCH_ES_BYTES;
     // only if .use_access_threads_ is set
     attack->eviction_set_.access_thread_count_ = DEF_ES_ACCESS_THREAD_COUNT;
 
@@ -310,6 +322,9 @@ void configAttackFromDefines(Attack *attack)
     attack->suppress_set_.access_sleep_time_us_ = DEF_SS_ACCESS_SLEEP_TIME_US;
     attack->suppress_set_.access_thread_count_ = DEF_SS_ACCESS_THREAD_COUNT;
 }
+#elif defined(_WIN32)
+    // TODO 
+#endif
 
 void printSampleTrace(Attack *attack) 
 {
