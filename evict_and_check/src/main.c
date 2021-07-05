@@ -232,8 +232,7 @@ int main(int argc, char *argv[])
         ret = fcaTargetsSampleFlushOnce(&attack);
         if(ret < 0)
         {
-            printf(FAIL "Error " OSAL_EC_FS " at fcaTargetPagesSampleFlushOnce...\n", OSAL_EC);
-            goto error;  
+            printf(WARNING "Error " OSAL_EC_FS " at fcaTargetPagesSampleFlushOnce...\n", OSAL_EC); 
         }
 
         // process results if a hit occured

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # parse arguments
-BUILD_TYPE=${1:-Release}
+BUILD_TYPE=${1:-debuginfo}
 
 # out-of-source build
 

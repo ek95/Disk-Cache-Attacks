@@ -10,6 +10,8 @@ import signal
 import time
 import mmap
 import shutil
+from pathlib import Path
+import pdb
 
 # require python 3.7 (dict insertion order preservation)
 MIN_PYTHON = (3, 7)
@@ -21,20 +23,21 @@ if sys.version_info < MIN_PYTHON:
 # GLOBALS
 #-------------------------------------------------------------------------------
 
-CONFIG_DEFAULT_REL_PATH = "./src/config_default.h"
-CONFIG_TEMPLATE_REL_PATH = "./src/config_template.h"
-CONFIG_OUT_REL_PATH = "./src/config.h"
-GRID_SAMPLE_RUNS = 200
-EV_CHK_BINARY_REL_FOLDER = "./build/bin"
+BUILD_SCRIPT_REL_PATH = Path("./build.sh")
+CONFIG_DEFAULT_REL_PATH = Path("./src/config_default.h")
+CONFIG_TEMPLATE_REL_PATH = Path("./src/config_template.h")
+CONFIG_OUT_REL_PATH = Path("./src/config.h")
+GRID_SAMPLE_RUNS = 20
+EV_CHK_BINARY_REL_FOLDER = Path("./build/bin")
 EV_CHK_BINARY = "ev_chk"
-EV_CHK_CONF_FILE_REL_PATH = "./build/bin/eval.conf"
+EV_CHK_CONF_FILE_REL_PATH = Path("./build/bin/eval.conf")
 EV_CHK_CONF_FILE_TEMPLATE = "{}\n{} 0\n\n"
-TARGET_FILE_REL_PATH = "./build/bin/test.so"
+TARGET_FILE_REL_PATH = Path("./build/bin/test.so")
 TARGET_PAGE = 1
-ACCESS_BINARY_REL_PATH = "../tools/access/bin/access"
+ACCESS_BINARY_REL_PATH = Path("../tools/access/bin/access")
 ACCESS_COUNT = 2
 ACCESS_PERIOD_MS = 1000
-LOG_REL_FOLDER = "./logs"
+LOG_REL_FOLDER = Path("./logs")
 LOG_NAME = "parameters.csv"
 IOSTAT_RESULT_LOG_NAME_TEMPLATE = "iostat_{}.log"
 RUN_SLEEP_TIME_S = 30
@@ -98,6 +101,8 @@ def evChkPipeWorker(args):
             args["ready_sem"].release()
         elif "Mean time to eviction per hit:" in line:
             args["eviction_time_ns"] = float(line.split(":")[1].split(" ")[1])
+        elif "Error" in line:
+            args["ready_sem"].release()
     # always release if program ended
     args["ready_sem"].release()
 
@@ -127,7 +132,7 @@ grid_search_conf = {
         "data_type": "integer",
         "method": "random_range",
         "min_value": 8 * 1024,
-        "max_value": 1024 * 1024,
+        "max_value": 128 * 1024,
         "post_sample_method": lambda value, values: value * mmap.PAGESIZE
     },
     "BS_MAX_AVAILABLE_MEM": {
@@ -257,7 +262,7 @@ grid_search_conf = {
 
 # initial build
 shutil.copyfile(CONFIG_DEFAULT_REL_PATH, CONFIG_OUT_REL_PATH)
-subprocess.run("./build.sh", check=True)
+subprocess.run(BUILD_SCRIPT_REL_PATH.resolve(), check=True)
 
 # read config template file
 config_template_f = open(CONFIG_TEMPLATE_REL_PATH, "r")
@@ -265,7 +270,7 @@ config_template = config_template_f.read()
 config_template_f.close()
 
 # create test file
-if not os.path.exists(TARGET_FILE_REL_PATH):
+if not TARGET_FILE_REL_PATH.exists():
     subprocess.run(["dd",
                     "if=/dev/urandom",
                     "of=" + TARGET_FILE_REL_PATH,
@@ -275,14 +280,14 @@ if not os.path.exists(TARGET_FILE_REL_PATH):
 
 # create attack eval configuration 
 with open(EV_CHK_CONF_FILE_REL_PATH, "w") as file:
-    file.write(EV_CHK_CONF_FILE_TEMPLATE.format(os.path.abspath(TARGET_FILE_REL_PATH), TARGET_PAGE))
+    file.write(EV_CHK_CONF_FILE_TEMPLATE.format(TARGET_FILE_REL_PATH.resolve(), TARGET_PAGE))
 
 # create log folder (if not exists)
 if not os.path.exists(LOG_REL_FOLDER):
     os.makedirs(LOG_REL_FOLDER)
 
 # create log file
-log_f = open(LOG_REL_FOLDER + "/" + LOG_NAME, "w+")
+log_f = open(LOG_REL_FOLDER / LOG_NAME, "w+")
 log_f.write(";".join(grid_search_conf.keys()) + "; Eviction Time [ns]\n")
 
 for r in range(GRID_SAMPLE_RUNS):
@@ -293,21 +298,22 @@ for r in range(GRID_SAMPLE_RUNS):
     # write new config
     writeConfig(grid_search_conf, values, config_template)
     # instantiate build
-    subprocess.run("./build.sh", check=True)
+    subprocess.run(BUILD_SCRIPT_REL_PATH.resolve(), check=True)
 
     # run eviction (not blocking)
-    ev_chk_p = subprocess.Popen(["./" + EV_CHK_BINARY,
-                                 os.path.abspath(EV_CHK_CONF_FILE_REL_PATH),
+    ev_chk_p = subprocess.Popen([(EV_CHK_BINARY_REL_FOLDER / EV_CHK_BINARY).resolve(),
+                                 EV_CHK_CONF_FILE_REL_PATH.resolve(),
                                  "-v"],
                                 stdout=subprocess.PIPE,
                                 universal_newlines=True,
                                 bufsize=1,
-                                cwd=EV_CHK_BINARY_REL_FOLDER)
+                                cwd=EV_CHK_BINARY_REL_FOLDER.resolve())
 
     # start stdout pipe listener thread
     ev_chk_pipe_worker_args = {
         "pipe": ev_chk_p.stdout,
-        "ready_sem": threading.Semaphore(0)
+        "ready_sem": threading.Semaphore(0),
+        "eviction_time_ns": -1
     }
     ev_chk_pipe_worker_t = threading.Thread(target=evChkPipeWorker,
                                             args=(ev_chk_pipe_worker_args,))
@@ -318,7 +324,7 @@ for r in range(GRID_SAMPLE_RUNS):
     # check if attack binary ended prematurly (error)
     ev_chk_p.poll()
     if ev_chk_p.returncode is not None and ev_chk_p.returncode != 0:
-        raise Exception("Error at executing attack!")
+        print("Error at executing attack!")
 
     # run iostat (not blocking)
     # assumes pipe buffer is big enough to receive output from iostat
@@ -342,10 +348,12 @@ for r in range(GRID_SAMPLE_RUNS):
     ev_chk_p.send_signal(signal.SIGINT)
     # join ev_chk worker
     ev_chk_pipe_worker_t.join()
+    # killall processes
+    ev_chk_p.kill()
     # wait till attack process is closed
     ev_chk_p.wait()
     if ev_chk_p.returncode != 0:
-        raise Exception("Error at executing attack!")
+        print("Error at executing attack!")
     # wait till iostat process is closed
     iostat_p.wait()
 
@@ -354,8 +362,8 @@ for r in range(GRID_SAMPLE_RUNS):
                 str(ev_chk_pipe_worker_args["eviction_time_ns"]) + "\n")
 
     # save iostat results
-    iostat_f = open(LOG_REL_FOLDER + "/" +
-                    IOSTAT_RESULT_LOG_NAME_TEMPLATE.format(r + 2), "w+")
+    iostat_f = open(LOG_REL_FOLDER /
+                    Path(IOSTAT_RESULT_LOG_NAME_TEMPLATE.format(r + 2)), "w+")
     iostat_f.write(iostat_p.stdout.read())
     iostat_f.close()
 
