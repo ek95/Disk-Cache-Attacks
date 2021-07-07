@@ -1,0 +1,10 @@
+# run shell in snap environment (to check the security settings)
+snap run --shell hamster-snap
+
+# private tmp and home directories
+# rest of system directories are read-only
+firejail --private-tmp --private=~/sandbox1
+
+snaps actually are sandboxed and have copies of liberaries but there is still a core (with common shared libraries)
+
+https://askubuntu.com/questions/1248092/cant-remove-core18-snap

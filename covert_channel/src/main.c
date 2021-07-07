@@ -7,16 +7,17 @@
  * 
  * Start the receiver first!
  * 
- * 
  *
- * Usage: ./covert_channel [targets config file] <-v>
+ * Usage: ./covert_channel [message + ack file] [ready file] [-s|-r] <-t RUNS>
+ *
+ *	-s
+ *		 Send mode.
  * 
- *  [targets config file]
- *      File containing the target pages from shared files to which accesses
- *      should be monitored.
- * 
- *  <-v>
- *      Verbose, show more information.
+ *	-r
+ *		 Receive mode.
+ *
+ *	-t RUNS
+ *		 Test mode, performs RUNS transmission cycles.
  *
  * NOTE For evaluation with the attack working set enabled the attacker binary should be stored
  *      somewhere in the search paths so that it is also added to the attack working set.
@@ -53,9 +54,6 @@
 /*-----------------------------------------------------------------------------
  * DEFINES
  */
-// covert chanel specific
-#define EVICTION_LESS
-#define MESSAGE_SIZE (8*1024)
 
 // eviction-less covert channel on linux
 #if defined(EVICTION_LESS) && defined(__linux)
@@ -96,7 +94,7 @@ const size_t SWITCHES_ARG_COUNT[SWITCHES_COUNT] = {0, 0, 1, 1};
                   "\t-r\n"                                                      \
                   "\t\t Receive mode.\n\n"                                      \
                   "\t-t RUNS\n"                                                 \
-                  "\t\t Test mode perform RUNS iterations.\n\n"                          
+                  "\t\t Test mode, performs RUNS transmission cycles.\n\n"                          
 
 // output TAGS with ANSI colors
 #define PENDING "\x1b[34;1m[PENDING]\x1b[0m "
@@ -119,6 +117,8 @@ static int cacheRemoveFilePages(FileMapping *mapping, size_t offset, size_t len)
 #elif defined(_WIN32)
 #endif
 #else 
+int sendBlock(Attack *attack, TargetFile *transmission_file, uint8_t *data);
+int receiveBlock(Attack *attack, TargetFile *transmission_file, uint8_t *data);
 #endif
 static void usageError(char *app_name);
 
@@ -176,6 +176,7 @@ int main(int argc, char *argv[])
     CmdLineParsed parsed_cmd_line;
 
     // variables necessary for general attack function
+    uint64_t cycle = 0;
     uint64_t timestamp = 0;
     uint8_t *message_buffer = NULL;
     Attack attack = {0};
@@ -375,13 +376,22 @@ int main(int argc, char *argv[])
     // configure target files
     transmission_file->has_target_sequence_ = 1;
     transmission_file->target_sequence_.offset_ = 0;
-    transmission_file->target_sequence_.length_ = TRANSMISSION_FILE_SIZE;
+    transmission_file->target_sequence_.length_ = TRANSMISSION_FILE_SIZE / PAGE_SIZE;
 
-    // start fca attack
-    if(fcaStart(&attack, 0) != 0)
+    // receive mode 
+    if(parsed_cmd_line.switch_states_[RECEIVE_SWITCH]) 
     {
-        printf(FAIL "Error " OSAL_EC_FS " at fcaStart...\n", OSAL_EC);
-        goto error;
+        // initial access of ack page
+        tmp += *((uint8_t *) transmission_file->mapping_.addr_ + ACK_PAGE_OFFSET * PAGE_SIZE);
+    }
+    else 
+    {
+        // start fca attack
+        if(fcaStart(&attack, 0) != 0)
+        {
+            printf(FAIL "Error " OSAL_EC_FS " at fcaStart...\n", OSAL_EC);
+            goto error;
+        }
     }
 #endif
     printf(INFO "Initial working set now consists of %zu files (%zu bytes mapped).\n",
@@ -422,6 +432,7 @@ int main(int argc, char *argv[])
     // main event loop
     if(parsed_cmd_line.switch_states_[SEND_SWITCH])
     {
+        printf(INFO "Sender started at UNIX timestamp: %zu us\n", osal_unix_ts_us());
         while (running && (test_runs == 0 || test_run < test_runs))
         {
             if(parsed_cmd_line.switch_states_[TEST_SWITCH])
@@ -444,13 +455,15 @@ int main(int argc, char *argv[])
             }
 
             // different send functions
-            TSC_BENCH_START(timestamp);
+            TSC_BENCH_START(cycle);
+            timestamp = tsc_bench_get_raw_timestamp_ns(cycle);
 #ifdef EVICTION_LESS
-            ret = sendBlock(message_ack_file, ready_file, message_buffer);
 #ifdef __linux
+            ret = sendBlock(message_ack_file, ready_file, message_buffer);
 #elif defined(_WIN32)
 #endif
 #else
+            ret = sendBlock(&attack, transmission_file, message_buffer);
 #endif
             if(ret == -1)
             {
@@ -484,13 +497,15 @@ int main(int argc, char *argv[])
         {
             // different receive functions
 #ifdef EVICTION_LESS
-            ret = receiveBlock(message_ack_file, ready_file, message_buffer);
 #ifdef __linux
+            ret = receiveBlock(message_ack_file, ready_file, message_buffer);
 #elif defined(_WIN32)
 #endif
 #else
+            ret = receiveBlock(&attack, transmission_file, message_buffer);
 #endif
-            TSC_BENCH_START(timestamp);
+            TSC_BENCH_STOP(cycle);
+            timestamp = tsc_bench_get_runtime_ns(0, cycle);
             if(ret == -1)
             {
                 printf(FAIL "Error " OSAL_EC_FS " at receiveBlock...\n", OSAL_EC);
@@ -520,6 +535,7 @@ int main(int argc, char *argv[])
 
             test_run++;
         }
+        printf(INFO "Receiver stopped at UNIX timestamp: %zu us\n", osal_unix_ts_us());
     }
 
     goto cleanup;
@@ -615,8 +631,8 @@ int sendBlock(TargetFile *message_ack_file, TargetFile *ready_file, uint8_t *dat
         goto error;
     }
 
-    // try first to prefetch (might benefit from asynchronous disk loads)
-    for (size_t p = 0, b = 0; p < MESSAGE_ACK_FILE_SIZE / PAGE_SIZE - 1; p++)
+    // prefetch first (might benefit from asynchronous disk loads)
+    for (size_t p = 0, b = 0; p < MESSAGE_SIZE / PAGE_SIZE; p++)
     {
         if (data[b] & mask)
         {
@@ -631,7 +647,7 @@ int sendBlock(TargetFile *message_ack_file, TargetFile *ready_file, uint8_t *dat
         }
     }
     // access pages
-    for (size_t p = 0, b = 0; p < MESSAGE_ACK_FILE_SIZE / PAGE_SIZE - 1; p++)
+    for (size_t p = 0, b = 0; p < MESSAGE_SIZE / PAGE_SIZE; p++)
     {
         if (data[b] & mask)
         {
@@ -648,7 +664,7 @@ int sendBlock(TargetFile *message_ack_file, TargetFile *ready_file, uint8_t *dat
 
     // (re)map ready file
     if(mapFile(&ready_file->mapping_, "", FILE_ACCESS_READ | FILE_ACCESS_EXECUTE, MAPPING_SHARED | 
-        MAPPING_ACCESS_READ | MAPPING_ACCESS_EXECUTE) != 0)
+        MAPPING_ACCESS_READ) != 0)
     {
         DEBUG_PRINT((DEBUG FAIL "Error " OSAL_EC_FS " at mapFile...\n", OSAL_EC)); 
         goto error;
@@ -695,15 +711,15 @@ int receiveBlock(TargetFile *message_ack_file, TargetFile *ready_file, uint8_t *
 
     // (re)map message + ack file
     if(mapFile(&message_ack_file->mapping_, "", FILE_ACCESS_READ | FILE_NOATIME, MAPPING_SHARED | 
-        MAPPING_ACCESS_READ | MAPPING_ACCESS_EXECUTE) != 0)
+        MAPPING_ACCESS_READ) != 0)
     {
         DEBUG_PRINT((DEBUG FAIL "Error " OSAL_EC_FS " at mapFile...\n", OSAL_EC)); 
         goto error;
     }
 
     // get message
-    getCacheStatusFileRange(&message_ack_file->mapping_, 0, MESSAGE_ACK_FILE_SIZE);
-    for (size_t p = 0, b = 0; p < MESSAGE_ACK_FILE_SIZE / PAGE_SIZE - 1; p++)
+    getCacheStatusFileRange(&message_ack_file->mapping_, 0, MESSAGE_SIZE);
+    for (size_t p = 0, b = 0; p < MESSAGE_SIZE / PAGE_SIZE; p++)
     {
         if (message_ack_file->mapping_.pages_cache_status_[p] & 1)
         {
@@ -768,6 +784,124 @@ int cacheRemoveFilePages(FileMapping *mapping, size_t offset, size_t len)
 
 #endif
 #else 
+int sendBlock(Attack *attack, TargetFile *transmission_file, uint8_t *data)
+{
+    int ret = 0;
+    static int even = 0;
+    volatile uint8_t tmp = 0;
+    uint8_t ack_status = 0;
+    char mask = 1;
+
+    DEBUG_PRINT((DEBUG "Sender: Wait for ack.\n"));
+    // wait for ack
+    do
+    {
+        getCacheStatusFilePage(&transmission_file->mapping_, ACK_PAGE_OFFSET * PAGE_SIZE, &ack_status);
+    } while (!(ack_status & 1) && running);
+    DEBUG_PRINT((DEBUG  "Sender: Got ack.\n"));
+
+    // remove transmission file pages
+    if(fcaTargetsSampleFlushOnce(attack) == -1)
+    {
+        DEBUG_PRINT((DEBUG FAIL "Error " OSAL_EC_FS " at fcaTargetsSampleFlushOnce...\n", OSAL_EC)); 
+        goto error;
+    }
+
+    // prefetch first (might benefit from asynchronous disk loads)
+    for (size_t p = 0, b = 0; p < MESSAGE_SIZE / PAGE_SIZE; p++)
+    {
+        if (data[b] & mask)
+        {
+#ifdef __linux
+            readahead(transmission_file->mapping_.internal_.fd_, p * PAGE_SIZE, PAGE_SIZE);
+#endif
+        }
+
+        mask = mask << 1;
+        if (!mask)
+        {
+            mask = 1;
+            b++;
+        }
+    }
+    // access pages
+    for (size_t p = 0, b = 0; p < MESSAGE_SIZE / PAGE_SIZE; p++)
+    {
+        if (data[b] & mask)
+        {
+            tmp += *((uint8_t *) transmission_file->mapping_.addr_ + p * PAGE_SIZE);
+        }
+
+        mask = mask << 1;
+        if (!mask)
+        {
+            mask = 1;
+            b++;
+        }
+    }
+
+    // send ready, advance to next ready
+    tmp += *((uint8_t *) transmission_file->mapping_.addr_ + READY_PAGE_OFFSET[even] * PAGE_SIZE);
+    even ^= 1;
+    DEBUG_PRINT((DEBUG "Sender: Send message + ready.\n"));
+
+    goto cleanup;
+error:
+    ret = -1;
+
+cleanup:
+    return ret;
+}
+
+int receiveBlock(Attack *attack, TargetFile *transmission_file, uint8_t *data)
+{
+    int ret = 0;
+    static int even = 0;
+    volatile uint8_t tmp = 0;
+    uint8_t ready_status = 0;
+    char mask = 1;
+    char byte = 0;
+
+    DEBUG_PRINT((DEBUG "Receiver: Wait for ready %d.\n", even));
+    do
+    {
+        getCacheStatusFilePage(&transmission_file->mapping_, READY_PAGE_OFFSET[even] * PAGE_SIZE, &ready_status);
+    } while (!(ready_status & 1) && running);
+    DEBUG_PRINT((DEBUG "Receiver: Got ready %d.\n", even));
+
+    // get message
+    getCacheStatusFileRange(&transmission_file->mapping_, 0, MESSAGE_SIZE);
+    for (size_t p = 0, b = 0; p < MESSAGE_SIZE / PAGE_SIZE; p++)
+    {
+        if (transmission_file->mapping_.pages_cache_status_[p] & 1)
+        {
+            byte |= mask;
+        }
+
+        mask = mask << 1;
+        if (!mask)
+        {
+            data[b] = byte;
+
+            b++;
+            byte = 0;
+            mask = 1;
+        }
+    }
+
+    // advance to next ready
+    even ^= 1;
+    // send ack
+    tmp += *((uint8_t *) transmission_file->mapping_.addr_ + ACK_PAGE_OFFSET * PAGE_SIZE);
+    DEBUG_PRINT((DEBUG "Receiver: Send ack.\n"));
+
+//    goto cleanup;
+//error:
+//    ret = -1;
+
+//cleanup:
+    return ret;
+}
 #endif
 
 void usageError(char *app_name)

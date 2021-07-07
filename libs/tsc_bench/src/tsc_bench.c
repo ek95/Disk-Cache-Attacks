@@ -127,9 +127,14 @@ cleanup:
   return ret;
 }
 
+uint64_t tsc_bench_get_raw_timestamp_ns(uint64_t cycle)
+{
+    return cycle * 1000000UL / tsc_bench_tsc_frequency_khz;
+}
+
 uint64_t tsc_bench_get_runtime_ns(uint64_t start_cycle, uint64_t stop_cycle)
 {
-  return (stop_cycle - start_cycle - tsc_bench_overhead_cycles) * 1000000UL / tsc_bench_tsc_frequency_khz;
+  return tsc_bench_get_raw_timestamp_ns(stop_cycle - start_cycle - tsc_bench_overhead_cycles);
 }
 
 static uint64_t get_min(uint64_t *samples, size_t count)

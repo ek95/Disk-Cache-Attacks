@@ -64,6 +64,13 @@
     {
         return getrandom(buf, len, 0);
     }
+
+    static inline size_t osal_get_timestamp_ns() 
+    {
+        struct timespec ts = {0};
+        clock_gettime(CLOCK_MONOTONIC, &ts);
+        return ts.tv_sec * 1000000000ULL + ts.tv_nsec; 
+    }
 #elif defined(_WIN32)
     #include "windows.h"
 
@@ -127,6 +134,11 @@
             return -1;
         }
         return len;
+    }
+
+    static inline size_t osal_get_timestamp_ns() 
+    {
+
     }
 #else 
   #error "Operating system not supported!"  

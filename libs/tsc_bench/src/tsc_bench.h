@@ -62,6 +62,7 @@
 
 // functions
 int tsc_bench_init(uint64_t tsc_frequency_khz);
+uint64_t tsc_bench_get_raw_timestamp_ns(uint64_t cycle);
 uint64_t tsc_bench_get_runtime_ns(uint64_t start_cycle, uint64_t stop_cycle); 
 
 #endif

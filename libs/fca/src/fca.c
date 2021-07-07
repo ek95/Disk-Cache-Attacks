@@ -31,7 +31,7 @@
 #endif
 #include "tsc_bench.h"
 // NOTE uncomment this to enable debug outputs
-//#define _DEBUG_
+#define _DEBUG_
 #include "debug.h"
 
 /*-----------------------------------------------------------------------------
@@ -933,7 +933,7 @@ int fcaAddTargetsFromFile(Attack *attack, char *targets_config_file_path)
 
             // map target file
             if (mapFile(&current_target_file.mapping_, current_target_file_path_abs, FILE_ACCESS_READ | FILE_NOATIME,
-                        MAPPING_ACCESS_READ | MAPPING_SHARED) != 0)
+                        MAPPING_SHARED | MAPPING_ACCESS_READ) != 0)
             {
                 DEBUG_PRINT((DEBUG FAIL "Error " OSAL_EC_FS " at mapFile...\n", OSAL_EC));
                 goto error;

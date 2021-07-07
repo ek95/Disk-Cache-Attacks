@@ -60,11 +60,22 @@ for i in range(test_runs):
     bit_errors.append(bytesGetSetBits(msg_diff))
 
 # calculate statistics
-transmit_times_ns = np.array(transmit_times_ns)
-bit_errors = np.array(bit_errors)
+transmit_times_ns = np.array(transmit_times_ns[1:])
+bit_errors = np.array(bit_errors[1:])
 transmit_speeds_bps = msg_size / transmit_times_ns * 1e9
 
+transmit_speed_mean_bps = np.mean(transmit_speeds_bps)
+transmit_speed_std_bps = np.sqrt(np.var(transmit_speeds_bps))
+transmit_speed_std_percent = transmit_speed_std_bps / transmit_speed_mean_bps * 100
 
-print(transmit_times_ns)
-print(bit_errors)
-print(transmit_speeds_bps)
+bit_errors_mean = np.mean(bit_errors)
+bit_errors_std = np.sqrt(np.var(bit_errors))
+bit_errors_std_percent = bit_errors_std / bit_errors_mean * 100
+
+# print results
+print("Transmit Speed Mean: {} +- {}({}%) bps".format(transmit_speed_mean_bps, transmit_speed_std_bps, transmit_speed_std_percent))
+print("Bit Erros Mean: {} +- {}({}%)".format(bit_errors_mean, bit_errors_std, bit_errors_std_percent))
+
+#print(transmit_times_ns)
+#print(bit_errors)
+#print(transmit_speeds_bps)

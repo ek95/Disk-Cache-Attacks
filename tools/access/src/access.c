@@ -41,13 +41,13 @@ int main(int argc, char *argv[])
     goto error;
   }
 
-    // get system page size
-    PAGE_SIZE = osal_get_page_size();
-    if(PAGE_SIZE == -1)
-    {
-        printf("Error " OSAL_EC_FS " at osal_get_page_size...\n", OSAL_EC);
-        goto error;
-    }
+  // get system page size
+  PAGE_SIZE = osal_get_page_size();
+  if(PAGE_SIZE == -1)
+  {
+      printf("Error " OSAL_EC_FS " at osal_get_page_size...\n", OSAL_EC);
+      goto error;
+  }
 
   target_page = strtoul(argv[TARGET_PAGE_ARG], &endptr, 10);
   if (endptr == argv[TARGET_PAGE_ARG] || *endptr != 0 || (target_page == ULONG_MAX && errno == ERANGE))
