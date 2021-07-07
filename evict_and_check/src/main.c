@@ -138,8 +138,6 @@ int main(int argc, char *argv[])
 
     // initialise file mappings
     initFileMapping(&self_mapping);
-    // initialise random generator
-    srand(time(NULL));
 
     // set output buffering to lines (needed for automated testing)
     setvbuf(stdout, NULL, _IOLBF, 0);

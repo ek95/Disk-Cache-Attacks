@@ -156,7 +156,6 @@ static int spawnSuppressThreads(Attack *attack);
 static void activateSS(DynArray *suppress_set, int use_file_api);
 static void *suppressThread(void *arg);
 
-static size_t getMappingCount(const unsigned char *status, size_t size_in_pages);
 static void fileMappingActivate(FileMapping *mapping, size_t offset, int use_file_api);
 static void fileMappingReactivate(FileMapping *mapping, size_t offset);
 
@@ -379,10 +378,10 @@ int initAttackWorkingSet(AttackWorkingSet *ws)
 
 int closeAttackWorkingSet(AttackWorkingSet *ws)
 {
+    // stop worker threads
+    dynArrayDestroy(&ws->access_threads_, closePageAccessThreadWSData);
     if(ws->running_)
     {
-        // stop worker threads
-        dynArrayDestroy(&ws->access_threads_, closePageAccessThreadWSData);
         __atomic_store_n(&ws->running_, 0, __ATOMIC_RELAXED);
         // could hang somewhere
         pthread_cancel(ws->manager_thread_);
@@ -521,21 +520,13 @@ int fcaInit(Attack *attack)
 {
     int ret = 0;
 
-    // get
-
     // get system page size
-#ifdef __linux
-    PAGE_SIZE = sysconf(_SC_PAGESIZE);
-    if (PAGE_SIZE == -1)
+    PAGE_SIZE = osal_get_page_size();
+    if(PAGE_SIZE == -1)
     {
-        DEBUG_PRINT((DEBUG FAIL "Error " OSAL_EC_FS " at syscconf...\n", OSAL_EC));
+        DEBUG_PRINT((DEBUG FAIL "Error " OSAL_EC_FS " at osal_get_page_size...\n", OSAL_EC));
         goto error;
     }
-#elif defined _WIN32
-    SYSTEM_INFO system_info;
-    GetSystemInfo(&system_info);
-    PAGE_SIZE = system_info.dwPageSize;
-#endif
 
     // get system ram size
 #ifdef __linux
@@ -1007,6 +998,7 @@ int fcaTargetsSampleFlushOnce(Attack *attack)
     }
     else if (accessed_memory == 0)
     {
+        errno = EAGAIN;
         DEBUG_PRINT((DEBUG FAIL "Error: Eviction was not possible!\n"));
         return -1;
     }
@@ -1070,7 +1062,7 @@ int targetsHmCacheStatusCB(void *data, void *arg)
         }
         // stop if wanted
         if (evict_mode == 1 && 
-            getMappingCount(target_file->mapping_.pages_cache_status_ + offset_in_pages, length_in_pages) != 0)
+            fcaCountCachedPages(target_file->mapping_.pages_cache_status_ + offset_in_pages, length_in_pages) != 0)
         {
             // (part of) file is still in page cache -> stop
             return HM_FE_BREAK;
@@ -1088,7 +1080,7 @@ int targetsHmCacheStatusCB(void *data, void *arg)
             return -1;
         }
         if (evict_mode == 1 &&
-            getMappingCount(target_file->mapping_.pages_cache_status_, target_file->mapping_.size_pages_) != 0)
+            fcaCountCachedPages(target_file->mapping_.pages_cache_status_, target_file->mapping_.size_pages_) != 0)
         {
             // (part of) file is still in page cache -> stop
             return HM_FE_BREAK;
@@ -1144,7 +1136,7 @@ int targetsHmShouldEvictCB(void *data, void *arg)
         size_t offset_in_pages = target_file->target_sequence_.offset_;
         size_t length_in_pages = target_file->target_sequence_.length_;
 
-        if(getMappingCount(target_file->mapping_.pages_cache_status_ + offset_in_pages, length_in_pages) != 0)
+        if(fcaCountCachedPages(target_file->mapping_.pages_cache_status_ + offset_in_pages, length_in_pages) != 0)
         {
             // (part of) file is still in page cache -> stop
             return HM_FE_BREAK;
@@ -1152,7 +1144,7 @@ int targetsHmShouldEvictCB(void *data, void *arg)
     }
     else if(target_file->is_target_file_)
     {
-        if (getMappingCount(target_file->mapping_.pages_cache_status_, target_file->mapping_.size_pages_) != 0)
+        if (fcaCountCachedPages(target_file->mapping_.pages_cache_status_, target_file->mapping_.size_pages_) != 0)
         {
             // (part of) file is still in page cache -> stop
             return HM_FE_BREAK;
@@ -1786,6 +1778,12 @@ int blockRAM(AttackBlockingSet *bs, size_t fillup_size)
         else if (child_process.pid_ == 0)
         {
             // child
+            #ifndef _DEBUG_
+                fclose(stdout);
+                fclose(stdin);
+                fclose(stderr);
+            #endif
+
             DEBUG_PRINT((DEBUG BS_TAG INFO "New child %zu with %zu kB dirty memory will be spawned...\n",
                          i, bs->def_fillup_size_ / 1024));
 
@@ -2281,13 +2279,13 @@ int initialProfileResidentPagesFile(Attack *attack, char *file_path)
             goto error;
         }
 
-        printf("%s\n", file_path_abs);
+        /*printf("%s\n", file_path_abs);
         for(size_t i = 0; i < current_cached_file.resident_page_sequences_.size_; i++)
         {
             PageSequence *seq = ((PageSequence *) current_cached_file.resident_page_sequences_.data_) + i;
             printf("%zu - %zu\n", seq->offset_, seq->offset_ + seq->length_ - 1);
         }
-        printf("\n");
+        printf("\n");*/
     }
 
     // statistics
@@ -2945,16 +2943,16 @@ void *suppressThread(void *arg)
 /*-----------------------------------------------------------------------------
  * OTHER HELPER FUNCTIONS
  */
-size_t getMappingCount(const unsigned char *status, size_t size_in_pages)
+size_t fcaCountCachedPages(uint8_t *pages_cache_status, size_t size_in_pages)
 {
-    size_t mapped = 0;
+    size_t cached = 0;
 
     for (size_t p = 0; p < size_in_pages; p++)
     {
-        mapped += (status[p] & 1);
+        cached += (pages_cache_status[p] & 1);
     }
 
-    return mapped;
+    return cached;
 }
 
 inline void fileMappingActivate(FileMapping *mapping, size_t offset, int use_file_api)

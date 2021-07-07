@@ -301,4 +301,13 @@ int fcaTargetsSampleFlushOnce(Attack *attack);
  */ 
 void fcaExit(Attack *attack);
 
+/* Counts the number of cached pages in cache status array .
+ *
+ * @param[in]   pages_cache_status  pointer to the cache status array
+ * @param[in]   size_in_pages       number of pages in status array
+ * @return      number of cached pages
+ * 
+ */ 
+size_t fcaCountCachedPages(uint8_t *pages_cache_status, size_t size_in_pages);
+
 #endif 

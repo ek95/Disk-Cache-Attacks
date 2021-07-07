@@ -42,18 +42,12 @@ int main(int argc, char *argv[])
   }
 
     // get system page size
-#ifdef __linux
-    PAGE_SIZE = sysconf(_SC_PAGESIZE);
-    if (PAGE_SIZE == -1)
+    PAGE_SIZE = osal_get_page_size();
+    if(PAGE_SIZE == -1)
     {
-        printf("Error " OSAL_EC_FS " at syscconf...\n", OSAL_EC);
+        printf("Error " OSAL_EC_FS " at osal_get_page_size...\n", OSAL_EC);
         goto error;
     }
-#elif defined _WIN32
-    SYSTEM_INFO system_info;
-    GetSystemInfo(&system_info);
-    PAGE_SIZE = system_info.dwPageSize;
-#endif
 
   target_page = strtoul(argv[TARGET_PAGE_ARG], &endptr, 10);
   if (endptr == argv[TARGET_PAGE_ARG] || *endptr != 0 || (target_page == ULONG_MAX && errno == ERANGE))

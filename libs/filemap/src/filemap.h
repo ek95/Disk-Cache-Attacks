@@ -3,7 +3,9 @@
 
 #include <stdlib.h>
 #include <stdint.h>
-#ifdef _WIN32
+#ifdef __linux
+#include <sys/mman.h>
+#elif defined(_WIN32)
 #include "Windows.h"
 #include "psapi.h"
 #endif 

@@ -893,7 +893,7 @@ int getCacheStatusFilePage(FileMapping *file_mapping, size_t offset, uint8_t *st
   {
       return -1;
   }
-  return FC_STATE_FN(file_mapping, offset, PAGE_SIZE, status);
+  return FC_STATE_FN(file_mapping, offset * PAGE_SIZE, PAGE_SIZE, status);
 }
 
 void freeFileCacheStatus(FileMapping *file_mapping) 

@@ -23,6 +23,13 @@ int tsc_bench_init(uint64_t tsc_frequency_khz)
   uint64_t variance_variances;
   uint64_t variance_min_values;
 
+  // already initialized
+  if(tsc_bench_overhead_cycles != 0 &&
+    tsc_bench_tsc_frequency_khz != 0)
+  {
+      return 0;
+  }
+
   // clear current overhead value
   tsc_bench_overhead_cycles = 0;
 

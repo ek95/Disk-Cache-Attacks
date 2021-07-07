@@ -4,12 +4,14 @@
 #ifdef __linux 
     #include <sys/types.h>  
     #include <sys/time.h>
+    #include <sys/random.h>
     #include <semaphore.h>
     #include <signal.h>
     #include <errno.h>
     #include <linux/limits.h>
     #include <sched.h> 
     #include <time.h>
+    #include <unistd.h>
 
 
     #define OSAL_MAX_PATH_LEN PATH_MAX
@@ -50,6 +52,17 @@
             .tv_nsec = (microseconds % 1000000ULL) * 1000ULL
         };
         nanosleep(&wait_time, NULL);
+    }
+
+    static inline size_t osal_get_page_size()
+    {
+        // get system page size
+        return sysconf(_SC_PAGESIZE);
+    }
+
+    static inline ssize_t osal_get_random(uint8_t *buf, size_t len) 
+    {
+        return getrandom(buf, len, 0);
     }
 #elif defined(_WIN32)
     #include "windows.h"
@@ -97,6 +110,23 @@
     {
         // windows can only sleep for ms
         Sleep(microseconds / 1000);
+    }
+
+    static inline size_t osal_get_page_size()
+    {
+        // get system page size
+        SYSTEM_INFO system_info;
+        GetSystemInfo(&system_info);
+        return system_info.dwPageSize;
+    }
+
+    static inline ssize_t osal_get_random(uint8_t *buf, size_t len) 
+    {
+        if(BCryptGenRandom(NULL, (BYTE *) buf, len, BCRYPT_USE_SYSTEM_PREFERRED_RNG) != STATUS_SUCCESS)
+        {
+            return -1;
+        }
+        return len;
     }
 #else 
   #error "Operating system not supported!"  
