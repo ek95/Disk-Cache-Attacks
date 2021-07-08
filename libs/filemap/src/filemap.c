@@ -921,5 +921,4 @@ void closeFileMapping(void *arg)
   closeMappingOnly(arg);
   closeFileOnly(arg);
   freeFileCacheStatus(arg);
-  
 }

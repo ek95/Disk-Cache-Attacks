@@ -31,7 +31,7 @@
 #endif
 #include "tsc_bench.h"
 // NOTE uncomment this to enable debug outputs
-#define _DEBUG_
+//#define _DEBUG_
 #include "debug.h"
 
 /*-----------------------------------------------------------------------------

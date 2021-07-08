@@ -20,7 +20,7 @@ def bytesDiff(bytesA, bytesB):
     
     bytesC = bytearray()
     for i in range(len(bytesA)):
-        bytesC += bytes(bytesA[i] ^ bytesB[i])
+        bytesC += (bytesA[i] ^ bytesB[i]).to_bytes(1, byteorder='big')
     
     return bytesC
     
@@ -76,6 +76,6 @@ bit_errors_std_percent = bit_errors_std / bit_errors_mean * 100
 print("Transmit Speed Mean: {} +- {}({}%) bps".format(transmit_speed_mean_bps, transmit_speed_std_bps, transmit_speed_std_percent))
 print("Bit Erros Mean: {} +- {}({}%)".format(bit_errors_mean, bit_errors_std, bit_errors_std_percent))
 
-#print(transmit_times_ns)
-#print(bit_errors)
-#print(transmit_speeds_bps)
+print(transmit_times_ns)
+print(bit_errors)
+print(transmit_speeds_bps)

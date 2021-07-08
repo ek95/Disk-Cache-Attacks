@@ -56,11 +56,12 @@
  */
 
 // eviction-less covert channel on linux
+#define MESSAGE_FILE_SIZE (MESSAGE_SIZE * 8 * PAGE_SIZE)
 #if defined(EVICTION_LESS) && defined(__linux)
-#define MESSAGE_ACK_FILE_SIZE ((MESSAGE_SIZE * 8 + 1) * PAGE_SIZE)
+#define MESSAGE_ACK_FILE_SIZE (MESSAGE_FILE_SIZE + PAGE_SIZE)
 #define ACK_PAGE_OFFSET (MESSAGE_SIZE * 8)
-#define READY_FILE_SIZE (2 * PAGE_SIZE)
-const size_t READY_PAGE_OFFSET[2] = {0, 1};
+#define READY_FILE_SIZE (PAGE_SIZE)
+#define READY_PAGE_OFFSET (0)
 // eviction-based covert channel on linux
 #else 
 #define TRANSMISSION_FILE_SIZE ((MESSAGE_SIZE * 8 + 3) * PAGE_SIZE)
@@ -245,7 +246,7 @@ int main(int argc, char *argv[])
     }
 
     // allocate message buffer
-    message_buffer = malloc(MESSAGE_SIZE);
+    message_buffer = calloc(MESSAGE_SIZE + 1, sizeof(uint8_t));
     if(message_buffer == NULL)
     {
         printf(FAIL "Error " OSAL_EC_FS " at malloc...\n", OSAL_EC);
@@ -330,11 +331,11 @@ int main(int argc, char *argv[])
     // configure target files
     message_ack_file->has_target_sequence_ = 1;
     message_ack_file->target_sequence_.offset_ = 0;
-    message_ack_file->target_sequence_.length_ = MESSAGE_ACK_FILE_SIZE;
+    message_ack_file->target_sequence_.length_ = MESSAGE_ACK_FILE_SIZE / PAGE_SIZE;
 
     ready_file->has_target_sequence_ = 1;
     ready_file->target_sequence_.offset_ = 0;
-    ready_file->target_sequence_.length_ = READY_FILE_SIZE;
+    ready_file->target_sequence_.length_ = READY_FILE_SIZE / PAGE_SIZE;
 
     // receive mode 
     if(parsed_cmd_line.switch_states_[RECEIVE_SWITCH]) 
@@ -445,8 +446,8 @@ int main(int argc, char *argv[])
             }
             else 
             {
-                printf("Message> ");
                 memset(message_buffer, 0, MESSAGE_SIZE);
+                printf("Message> ");
                 if(fgets((char *) message_buffer, MESSAGE_SIZE, stdin) == NULL)
                 {
                     printf(FAIL "Error " OSAL_EC_FS " at fgets...\n", OSAL_EC);
@@ -482,11 +483,11 @@ int main(int argc, char *argv[])
                 {
                     printf(FAIL "Error " OSAL_EC_FS " at fwrite...\n", OSAL_EC);
                     goto error;            
-                } 
-            }
+                }
 #ifdef __linux
-            fsync(fileno(test_trace_file));
-#endif
+                fsync(fileno(test_trace_file));
+#endif                 
+            }
 
             test_run++;
         }
@@ -611,7 +612,6 @@ void configAttackFromDefines(Attack *attack)
 int sendBlock(TargetFile *message_ack_file, TargetFile *ready_file, uint8_t *data)
 {
     int ret = 0;
-    static int even = 0;
     volatile uint8_t tmp = 0;
     uint8_t ack_status = 0;
     char mask = 1;
@@ -632,7 +632,7 @@ int sendBlock(TargetFile *message_ack_file, TargetFile *ready_file, uint8_t *dat
     }
 
     // prefetch first (might benefit from asynchronous disk loads)
-    for (size_t p = 0, b = 0; p < MESSAGE_SIZE / PAGE_SIZE; p++)
+    for (size_t p = 0, b = 0; p < MESSAGE_FILE_SIZE / PAGE_SIZE; p++)
     {
         if (data[b] & mask)
         {
@@ -647,7 +647,7 @@ int sendBlock(TargetFile *message_ack_file, TargetFile *ready_file, uint8_t *dat
         }
     }
     // access pages
-    for (size_t p = 0, b = 0; p < MESSAGE_SIZE / PAGE_SIZE; p++)
+    for (size_t p = 0, b = 0; p < MESSAGE_FILE_SIZE / PAGE_SIZE; p++)
     {
         if (data[b] & mask)
         {
@@ -670,9 +670,8 @@ int sendBlock(TargetFile *message_ack_file, TargetFile *ready_file, uint8_t *dat
         goto error;
     }
 
-    // send ready, advance to next ready
-    tmp += *((uint8_t *) ready_file->mapping_.addr_ + READY_PAGE_OFFSET[even] * PAGE_SIZE);
-    even ^= 1;
+    // send ready
+    tmp += *((uint8_t *) ready_file->mapping_.addr_ + READY_PAGE_OFFSET * PAGE_SIZE);
     DEBUG_PRINT((DEBUG "Sender: Send message + ready.\n"));
 
     goto cleanup;
@@ -689,18 +688,17 @@ cleanup:
 int receiveBlock(TargetFile *message_ack_file, TargetFile *ready_file, uint8_t *data)
 {
     int ret = 0;
-    static int even = 0;
     volatile uint8_t tmp = 0;
     uint8_t ready_status = 0;
     char mask = 1;
     char byte = 0;
 
-    DEBUG_PRINT((DEBUG "Receiver: Wait for ready %d.\n", even));
+    DEBUG_PRINT((DEBUG "Receiver: Wait for ready.\n"));
     do
     {
-        getCacheStatusFilePage(&ready_file->mapping_, READY_PAGE_OFFSET[even] * PAGE_SIZE, &ready_status);
+        getCacheStatusFilePage(&ready_file->mapping_, READY_PAGE_OFFSET * PAGE_SIZE, &ready_status);
     } while (!(ready_status & 1) && running);
-    DEBUG_PRINT((DEBUG "Receiver: Got ready %d.\n", even));
+    DEBUG_PRINT((DEBUG "Receiver: Got ready.\n"));
 
     // remove ready file pages
     if(cacheRemoveFilePages(&ready_file->mapping_, 0, READY_FILE_SIZE) != 0)
@@ -718,8 +716,8 @@ int receiveBlock(TargetFile *message_ack_file, TargetFile *ready_file, uint8_t *
     }
 
     // get message
-    getCacheStatusFileRange(&message_ack_file->mapping_, 0, MESSAGE_SIZE);
-    for (size_t p = 0, b = 0; p < MESSAGE_SIZE / PAGE_SIZE; p++)
+    getCacheStatusFileRange(&message_ack_file->mapping_, 0, MESSAGE_FILE_SIZE);
+    for (size_t p = 0, b = 0; p < MESSAGE_FILE_SIZE / PAGE_SIZE; p++)
     {
         if (message_ack_file->mapping_.pages_cache_status_[p] & 1)
         {
@@ -737,8 +735,6 @@ int receiveBlock(TargetFile *message_ack_file, TargetFile *ready_file, uint8_t *
         }
     }
 
-    // advance to next ready
-    even ^= 1;
     // send ack
     tmp += *((uint8_t *) message_ack_file->mapping_.addr_ + ACK_PAGE_OFFSET * PAGE_SIZE);
     DEBUG_PRINT((DEBUG "Receiver: Send ack.\n"));
@@ -771,6 +767,7 @@ int cacheRemoveFilePages(FileMapping *mapping, size_t offset, size_t len)
         {
             return -1;
         }
+        osal_sched_yield();
     } while (fcaCountCachedPages(mapping->pages_cache_status_ + (offset / PAGE_SIZE), len / PAGE_SIZE) != 0);
     // hint random access (no readahead)
     if(adviseFileUsage(mapping, offset, len, USAGE_RANDOM) != 0)
@@ -808,7 +805,7 @@ int sendBlock(Attack *attack, TargetFile *transmission_file, uint8_t *data)
     }
 
     // prefetch first (might benefit from asynchronous disk loads)
-    for (size_t p = 0, b = 0; p < MESSAGE_SIZE / PAGE_SIZE; p++)
+    for (size_t p = 0, b = 0; p < MESSAGE_FILE_SIZE / PAGE_SIZE; p++)
     {
         if (data[b] & mask)
         {
@@ -825,7 +822,7 @@ int sendBlock(Attack *attack, TargetFile *transmission_file, uint8_t *data)
         }
     }
     // access pages
-    for (size_t p = 0, b = 0; p < MESSAGE_SIZE / PAGE_SIZE; p++)
+    for (size_t p = 0, b = 0; p < MESSAGE_FILE_SIZE / PAGE_SIZE; p++)
     {
         if (data[b] & mask)
         {
@@ -870,8 +867,8 @@ int receiveBlock(Attack *attack, TargetFile *transmission_file, uint8_t *data)
     DEBUG_PRINT((DEBUG "Receiver: Got ready %d.\n", even));
 
     // get message
-    getCacheStatusFileRange(&transmission_file->mapping_, 0, MESSAGE_SIZE);
-    for (size_t p = 0, b = 0; p < MESSAGE_SIZE / PAGE_SIZE; p++)
+    getCacheStatusFileRange(&transmission_file->mapping_, 0, MESSAGE_FILE_SIZE);
+    for (size_t p = 0, b = 0; p < MESSAGE_FILE_SIZE / PAGE_SIZE; p++)
     {
         if (transmission_file->mapping_.pages_cache_status_[p] & 1)
         {
