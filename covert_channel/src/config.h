@@ -52,7 +52,7 @@ char* DEF_WS_SEARCH_PATHS[] =
 #define DEF_SS_ACCESS_THREAD_COUNT 6
 
 // Covert Channel specific
-//#define EVICTION_LESS
+#define EVICTION_LESS
 #define MESSAGE_SIZE (4*1024ULL)
 
 #endif

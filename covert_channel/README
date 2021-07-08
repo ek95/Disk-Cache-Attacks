@@ -8,3 +8,6 @@ firejail --private-tmp --private=~/sandbox1
 snaps actually are sandboxed and have copies of liberaries but there is still a core (with common shared libraries)
 
 https://askubuntu.com/questions/1248092/cant-remove-core18-snap
+
+MADV_DONTNEED
+zap_pte_range->page_remove_rmap
