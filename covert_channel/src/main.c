@@ -59,17 +59,9 @@
 
 // eviction-less covert channel on linux
 #define MESSAGE_FILE_SIZE (MESSAGE_SIZE * 8 * PAGE_SIZE)
-#if defined(EVICTION_LESS) && defined(__linux)
-#define MESSAGE_ACK_FILE_SIZE (MESSAGE_FILE_SIZE + PAGE_SIZE)
-#define ACK_PAGE_OFFSET (MESSAGE_SIZE * 8)
-#define READY_FILE_SIZE (PAGE_SIZE)
-#define READY_PAGE_OFFSET (0)
-// eviction-based covert channel on linux
-#else 
 #define TRANSMISSION_FILE_SIZE ((MESSAGE_SIZE * 8 + 3) * PAGE_SIZE)
-#define ACK_PAGE_OFFSET (MESSAGE_SIZE * 8)
 const size_t READY_PAGE_OFFSET[2] = {MESSAGE_SIZE * 8 + 1, MESSAGE_SIZE * 8 + 2};
-#endif
+#define ACK_PAGE_OFFSET (MESSAGE_SIZE * 8)
 #define SEND_TRACE_FILE "snd_trace.bin"
 #define RECEIVE_TRACE_FILE "rcv_trace.bin"
 
@@ -81,13 +73,8 @@ const size_t READY_PAGE_OFFSET[2] = {MESSAGE_SIZE * 8 + 1, MESSAGE_SIZE * 8 + 2}
 #define FCA_WINDOWS_BS_SWITCH 3
 const char *SWITCHES_STR[SWITCHES_COUNT] = {"-s", "-r", "-t", "-b"};
 const size_t SWITCHES_ARG_COUNT[SWITCHES_COUNT] = {0, 0, 1, 1};
-#if defined(EVICTION_LESS) && defined(__linux)
-#define MANDATORY_ARGS 2
-#define MANDATORY_ARGS_USAGE "[message + ack file] [ready file]"
-#else
 #define MANDATORY_ARGS 1
 #define MANDATORY_ARGS_USAGE "[transmission file]"
-#endif 
 
 #define TRANSMISSION_FILE_PATH_ARG 0
 #define TRANSMISSION_READY_FILE_PATH_ARG 1
@@ -114,8 +101,8 @@ const size_t SWITCHES_ARG_COUNT[SWITCHES_COUNT] = {0, 0, 1, 1};
 static void configAttackFromDefines(Attack *attack);
 #ifdef EVICTION_LESS
 #ifdef __linux
-static int sendBlock(TargetFile *message_ack_file, TargetFile *ready_file, uint8_t *data);
-static int receiveBlock(TargetFile *message_ack_file, TargetFile *ready_file, uint8_t *data);
+static int sendBlock(TargetFile *transmission_file, uint8_t *data);
+static int receiveBlock(TargetFile *transmission_file, uint8_t *data);
 static int cacheRemoveFilePages(FileMapping *mapping, size_t offset, size_t len);
 #elif defined(_WIN32)
 #endif
@@ -184,12 +171,7 @@ int main(int argc, char *argv[])
     uint8_t *message_buffer = NULL;
     Attack attack = {0};
     FileMapping self_mapping = {0};
-#if defined(EVICTION_LESS) && defined(__linux)
-    TargetFile *message_ack_file;
-    TargetFile *ready_file;
-#else 
-    TargetFile *transmission_file;
-#endif
+    TargetFile *transmission_file = NULL;
     uint64_t test_run = 0;
     uint64_t test_runs = 0;
     FILE *test_trace_file = NULL;
@@ -289,7 +271,7 @@ int main(int argc, char *argv[])
     // sample configuration
     configAttackFromDefines(&attack);
 
-// does not use eviction-based approach
+// eviction-less approach on linux does not start attack - we have to select the source by hand
 #if defined(EVICTION_LESS) && defined(__linux)
     // change file cache state sample function
     if (changeFcStateSource(attack.fc_state_source_) != 0)
@@ -297,67 +279,8 @@ int main(int argc, char *argv[])
         printf(FAIL "Error " OSAL_EC_FS " at changeFcStateSource...\n", OSAL_EC);
         goto error;
     }
-    
-    // create covert channel files if they do not exist
-    ret= createRandomFile(parsed_cmd_line.mandatory_args_[TRANSMISSION_FILE_PATH_ARG], MESSAGE_ACK_FILE_SIZE);
-    if (ret != 0)
-    {
-        printf(FAIL "Error " OSAL_EC_FS " at createRandomFile for: %s...\n", OSAL_EC, 
-            parsed_cmd_line.mandatory_args_[TRANSMISSION_FILE_PATH_ARG]);
-        goto error;
-    }
-    ret = createRandomFile(parsed_cmd_line.mandatory_args_[TRANSMISSION_READY_FILE_PATH_ARG], READY_FILE_SIZE);
-    if (ret != 0)
-    {
-        printf(FAIL "Error " OSAL_EC_FS " at createRandomFile for: %s...\n", OSAL_EC, 
-            parsed_cmd_line.mandatory_args_[TRANSMISSION_READY_FILE_PATH_ARG]);
-        goto error;
-    }
+#endif
 
-    // add target files
-    message_ack_file = fcaAddTargetFile(&attack, parsed_cmd_line.mandatory_args_[TRANSMISSION_FILE_PATH_ARG]);
-    if(message_ack_file == NULL)
-    {
-        printf(FAIL "Error " OSAL_EC_FS " at fcaAddTargetFile for: %s...\n", OSAL_EC, 
-            parsed_cmd_line.mandatory_args_[TRANSMISSION_FILE_PATH_ARG]);
-        goto error;
-    }
-    ready_file = fcaAddTargetFile(&attack, parsed_cmd_line.mandatory_args_[TRANSMISSION_READY_FILE_PATH_ARG]);
-    if(ready_file == NULL)
-    {
-        printf(FAIL "Error " OSAL_EC_FS " at fcaAddTargetFile for: %s...\n", OSAL_EC, 
-            parsed_cmd_line.mandatory_args_[TRANSMISSION_READY_FILE_PATH_ARG]);
-        goto error;
-    }
-
-    // configure target files
-    message_ack_file->has_target_sequence_ = 1;
-    message_ack_file->target_sequence_.offset_ = 0;
-    message_ack_file->target_sequence_.length_ = MESSAGE_ACK_FILE_SIZE / PAGE_SIZE;
-
-    ready_file->has_target_sequence_ = 1;
-    ready_file->target_sequence_.offset_ = 0;
-    ready_file->target_sequence_.length_ = READY_FILE_SIZE / PAGE_SIZE;
-
-    // receive mode 
-    if(parsed_cmd_line.switch_states_[RECEIVE_SWITCH]) 
-    {
-        // remove any cached content if exists
-        if(cacheRemoveFilePages(&message_ack_file->mapping_, 0, MESSAGE_ACK_FILE_SIZE) != 0 ||
-            cacheRemoveFilePages(&ready_file->mapping_, 0, READY_FILE_SIZE) != 0)
-        {
-            printf(FAIL "Error " OSAL_EC_FS " at cacheRemoveFilePages...\n", OSAL_EC);
-            goto error;            
-        }
-
-        // initial access of ack page
-        tmp += *((uint8_t *) message_ack_file->mapping_.addr_ + ACK_PAGE_OFFSET * PAGE_SIZE);
-
-        // initially unmap message + ack file
-        closeMappingOnly(&message_ack_file->mapping_);
-    }
-// does use eviction-based approach
-#else 
     // create transmission file if they do not exist
     ret= createRandomFile(parsed_cmd_line.mandatory_args_[TRANSMISSION_FILE_PATH_ARG], TRANSMISSION_FILE_SIZE);
     if (ret != 0)
@@ -384,9 +307,28 @@ int main(int argc, char *argv[])
     // receive mode 
     if(parsed_cmd_line.switch_states_[RECEIVE_SWITCH]) 
     {
+        // remove any cached content if exists
+        // easily possible from both parties in case of eviction-less approach
+#if defined(EVICTION_LESS) && defined(__linux)
+        if(cacheRemoveFilePages(&transmission_file->mapping_, 0, TRANSMISSION_FILE_SIZE) != 0)
+        {
+            printf(FAIL "Error " OSAL_EC_FS " at cacheRemoveFilePages...\n", OSAL_EC);
+            goto error;            
+        }
+#endif
         // initial access of ack page
         tmp += *((uint8_t *) transmission_file->mapping_.addr_ + ACK_PAGE_OFFSET * PAGE_SIZE);
+        // madvise DONT_NEED, tears down mappings (page tables) -> decreases page reference count
+        // allows other party to perform directed page cache flushes in that range
+#if defined(EVICTION_LESS) && defined(__linux)
+        if(madvise(transmission_file->mapping_.addr_, TRANSMISSION_FILE_SIZE, MADV_DONTNEED) != 0)
+        {
+            printf(FAIL "Error " OSAL_EC_FS " at madvise...\n", OSAL_EC);
+            goto error;            
+        }
+#endif
     }
+#ifndef EVICTION_LESS
     else 
     {
         // start fca attack
@@ -397,6 +339,7 @@ int main(int argc, char *argv[])
         }
     }
 #endif
+
     printf(INFO "Initial working set now consists of %zu files (%zu bytes mapped).\n",
         attack.working_set_.resident_files_[attack.working_set_.up_to_date_list_set_].count_,
         attack.working_set_.mem_in_ws_[attack.working_set_.up_to_date_list_set_]);
@@ -462,7 +405,7 @@ int main(int argc, char *argv[])
             timestamp = tsc_bench_get_raw_timestamp_ns(cycle);
 #ifdef EVICTION_LESS
 #ifdef __linux
-            ret = sendBlock(message_ack_file, ready_file, message_buffer);
+            ret = sendBlock(transmission_file, message_buffer);
 #elif defined(_WIN32)
 #endif
 #else
@@ -501,7 +444,7 @@ int main(int argc, char *argv[])
             // different receive functions
 #ifdef EVICTION_LESS
 #ifdef __linux
-            ret = receiveBlock(message_ack_file, ready_file, message_buffer);
+            ret = receiveBlock(transmission_file, message_buffer);
 #elif defined(_WIN32)
 #endif
 #else
@@ -611,7 +554,7 @@ void configAttackFromDefines(Attack *attack)
 
 #ifdef EVICTION_LESS
 #ifdef __linux
-int sendBlock(TargetFile *message_ack_file, TargetFile *ready_file, uint8_t *data)
+int sendBlock(TargetFile *transmission_file, uint8_t *data)
 {
     int ret = 0;
     size_t cycle_start = 0, cycle_end = 0;
@@ -627,19 +570,19 @@ int sendBlock(TargetFile *message_ack_file, TargetFile *ready_file, uint8_t *dat
     // wait for ack
     do
     {
-        getCacheStatusFilePage(&message_ack_file->mapping_, ACK_PAGE_OFFSET * PAGE_SIZE, &ack_status);
+        getCacheStatusFilePage(&transmission_file->mapping_, ACK_PAGE_OFFSET * PAGE_SIZE, &ack_status);
     } while (!(ack_status & 1) && running);
 #ifdef _DEBUG_    
     TSC_BENCH_STOP(cycle_end);
 #endif
     DEBUG_PRINT((DEBUG INFO "Sender: Got ack (took %zu ns).\n", tsc_bench_get_runtime_ns(cycle_start, cycle_end)));
 
-    DEBUG_PRINT((DEBUG INFO "Sender: Removing message + ack pages.\n"));
+    DEBUG_PRINT((DEBUG INFO "Sender: Removing transmission pages.\n"));
 #ifdef _DEBUG_    
     TSC_BENCH_START(cycle_start);
 #endif
-    // remove message + ack file pages
-    if(cacheRemoveFilePages(&message_ack_file->mapping_, 0, MESSAGE_ACK_FILE_SIZE) != 0)
+    // remove all pages
+    if(cacheRemoveFilePages(&transmission_file->mapping_, 0, TRANSMISSION_FILE_SIZE) != 0)
     {
         DEBUG_PRINT((DEBUG FAIL "Error " OSAL_EC_FS " at cacheRemoveFilePages...\n", OSAL_EC)); 
         goto error;
@@ -647,7 +590,7 @@ int sendBlock(TargetFile *message_ack_file, TargetFile *ready_file, uint8_t *dat
 #ifdef _DEBUG_
     TSC_BENCH_STOP(cycle_end);
 #endif
-    DEBUG_PRINT((DEBUG INFO "Sender: Message + ack pages removed (took %zu ns).\n", tsc_bench_get_runtime_ns(cycle_start, cycle_end)));
+    DEBUG_PRINT((DEBUG INFO "Sender: Transmission pages removed (took %zu ns).\n", tsc_bench_get_runtime_ns(cycle_start, cycle_end)));
 
     DEBUG_PRINT((DEBUG INFO "Sender: Accessing message pages.\n"));
 #ifdef _DEBUG_    
@@ -658,7 +601,7 @@ int sendBlock(TargetFile *message_ack_file, TargetFile *ready_file, uint8_t *dat
     {
         if (data[b] & mask)
         {
-            readahead(message_ack_file->mapping_.internal_.fd_, p * PAGE_SIZE, PAGE_SIZE);
+            readahead(transmission_file->mapping_.internal_.fd_, p * PAGE_SIZE, PAGE_SIZE);
         }
 
         mask = mask << 1;
@@ -673,7 +616,7 @@ int sendBlock(TargetFile *message_ack_file, TargetFile *ready_file, uint8_t *dat
     {
         if (data[b] & mask)
         {
-            tmp += *((uint8_t *) message_ack_file->mapping_.addr_ + p * PAGE_SIZE);
+            tmp += *((uint8_t *) transmission_file->mapping_.addr_ + p * PAGE_SIZE);
         }
 
         mask = mask << 1;
@@ -688,20 +631,12 @@ int sendBlock(TargetFile *message_ack_file, TargetFile *ready_file, uint8_t *dat
 #endif    
     DEBUG_PRINT((DEBUG INFO "Sender: Accessed message pages (took %zu ns).\n", tsc_bench_get_runtime_ns(cycle_start, cycle_end)));
 
-    DEBUG_PRINT((DEBUG INFO "Sender: Remapping + sending ready.\n"));
+    DEBUG_PRINT((DEBUG INFO "Sender: Sending ready.\n"));
 #ifdef _DEBUG_    
     TSC_BENCH_START(cycle_start);
 #endif
-    // (re)map ready file
-    if(mapFile(&ready_file->mapping_, "", FILE_ACCESS_READ | FILE_ACCESS_EXECUTE, MAPPING_SHARED | 
-        MAPPING_ACCESS_READ) != 0)
-    {
-        DEBUG_PRINT((DEBUG FAIL "Error " OSAL_EC_FS " at mapFile...\n", OSAL_EC)); 
-        goto error;
-    }
-
     // send ready
-    tmp += *((uint8_t *) ready_file->mapping_.addr_ + READY_PAGE_OFFSET * PAGE_SIZE);
+    tmp += *((uint8_t *) transmission_file->mapping_.addr_ + READY_PAGE_OFFSET[0] * PAGE_SIZE);
 #ifdef _DEBUG_
     TSC_BENCH_STOP(cycle_end);
 #endif
@@ -712,13 +647,17 @@ error:
     ret = -1;
 
 cleanup:
-    // unmap ready file
-    // (so that fadvise + madvise by other party are guaranteed to work)
-    closeMappingOnly(&ready_file->mapping_);
+    // madvise DONT_NEED for ready page, tears down mappings (page tables) -> decreases page reference count
+    // allows other party to perform directed page cache flushes in that range
+    if(madvise((uint8_t *) transmission_file->mapping_.addr_ + READY_PAGE_OFFSET[0] * PAGE_SIZE, PAGE_SIZE, MADV_DONTNEED) != 0)
+    {
+        printf(FAIL "Error " OSAL_EC_FS " at madvise...\n", OSAL_EC);
+        goto error;            
+    }
     return ret;
 }
 
-int receiveBlock(TargetFile *message_ack_file, TargetFile *ready_file, uint8_t *data)
+int receiveBlock(TargetFile *transmission_file, uint8_t *data)
 {
     int ret = 0;
     size_t cycle_start = 0, cycle_end = 0;
@@ -734,7 +673,7 @@ int receiveBlock(TargetFile *message_ack_file, TargetFile *ready_file, uint8_t *
 #endif    
     do
     {
-        getCacheStatusFilePage(&ready_file->mapping_, READY_PAGE_OFFSET * PAGE_SIZE, &ready_status);
+        getCacheStatusFilePage(&transmission_file->mapping_, READY_PAGE_OFFSET[0] * PAGE_SIZE, &ready_status);
     } while (!(ready_status & 1) && running);
 #ifdef _DEBUG_
     TSC_BENCH_STOP(cycle_end);
@@ -746,7 +685,7 @@ int receiveBlock(TargetFile *message_ack_file, TargetFile *ready_file, uint8_t *
     TSC_BENCH_START(cycle_start);
 #endif
     // remove ready file pages
-    if(cacheRemoveFilePages(&ready_file->mapping_, 0, READY_FILE_SIZE) != 0)
+    if(cacheRemoveFilePages(&transmission_file->mapping_, READY_PAGE_OFFSET[0] * PAGE_SIZE, PAGE_SIZE) != 0)
     {
         DEBUG_PRINT((DEBUG FAIL "Error " OSAL_EC_FS " at cacheRemoveFilePages...\n", OSAL_EC)); 
         goto error;
@@ -760,19 +699,12 @@ int receiveBlock(TargetFile *message_ack_file, TargetFile *ready_file, uint8_t *
 #ifdef _DEBUG_    
     TSC_BENCH_START(cycle_start);
 #endif
-    // (re)map message + ack file
-    if(mapFile(&message_ack_file->mapping_, "", FILE_ACCESS_READ | FILE_NOATIME, MAPPING_SHARED | 
-        MAPPING_ACCESS_READ) != 0)
-    {
-        DEBUG_PRINT((DEBUG FAIL "Error " OSAL_EC_FS " at mapFile...\n", OSAL_EC)); 
-        goto error;
-    }
 
     // get message
-    getCacheStatusFileRange(&message_ack_file->mapping_, 0, MESSAGE_FILE_SIZE);
+    getCacheStatusFileRange(&transmission_file->mapping_, 0, MESSAGE_FILE_SIZE);
     for (size_t p = 0, b = 0; p < MESSAGE_FILE_SIZE / PAGE_SIZE; p++)
     {
-        if (message_ack_file->mapping_.pages_cache_status_[p] & 1)
+        if (transmission_file->mapping_.pages_cache_status_[p] & 1)
         {
             byte |= mask;
         }
@@ -789,7 +721,7 @@ int receiveBlock(TargetFile *message_ack_file, TargetFile *ready_file, uint8_t *
     }
 
     // send ack
-    tmp += *((uint8_t *) message_ack_file->mapping_.addr_ + ACK_PAGE_OFFSET * PAGE_SIZE);
+    tmp += *((uint8_t *) transmission_file->mapping_.addr_ + ACK_PAGE_OFFSET * PAGE_SIZE);
 #ifdef _DEBUG_    
     TSC_BENCH_STOP(cycle_end);
 #endif
@@ -800,9 +732,13 @@ error:
     ret = -1;
 
 cleanup:
-    // unmap message + ack file 
-    // (so that fadvise + madvise by other party are guaranteed to work)
-    closeMappingOnly(&message_ack_file->mapping_);
+    // madvise DONT_NEED for transmission pages, tears down mappings (page tables) -> decreases page reference count
+    // allows other party to perform directed page cache flushes in that range
+    if(madvise(transmission_file->mapping_.addr_, TRANSMISSION_FILE_SIZE, MADV_DONTNEED) != 0)
+    {
+        printf(FAIL "Error " OSAL_EC_FS " at madvise...\n", OSAL_EC);
+        goto error;            
+    }
     return ret;
 }
 
@@ -813,7 +749,7 @@ int cacheRemoveFilePages(FileMapping *mapping, size_t offset, size_t len)
     do
     {
         // hint DONTNEED
-        // (removes pages from cache if only one process uses them)
+        // (removes pages from cache if page reference count is 1, e.g. this process uses it)
         if(adviseFileUsage(mapping, offset, len, USAGE_DONTNEED) != 0)
         {
             return -1;
