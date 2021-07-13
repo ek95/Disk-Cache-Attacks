@@ -221,6 +221,8 @@ typedef struct _Attack_
 
     int fc_state_source_;
 
+    size_t resample_sleep_time_us_;
+
     AttackEvictionSet eviction_set_;
     AttackBlockingSet blocking_set_;
     AttackWorkingSet working_set_;
@@ -260,8 +262,22 @@ int fcaInit(Attack *attack);
 TargetFile *fcaAddTargetFile(Attack *attack, char *target_file_path);
 
 /* Adds a target files using a configuration file. 
- * The allowed structure for the configuration file can be seen
- * in the examples provided in /.
+ * Syntax for the configuration file:
+ * <target filepath>\n
+ * <target page offset in hex> <start eviction after hit: 0 or 1>\n
+ * <target page offset in hex> <start eviction after hit: 0 or 1>\n
+ * .
+ * .
+ * .
+ * \n
+ * <target filepath>\n
+ * <target page offset in hex> <start eviction after hit: 0 or 1>\n
+ * <target page offset in hex> <start eviction after hit: 0 or 1>\n
+ * .
+ * .
+ * .
+ * \n
+ * EOF
  *
  * @param[in]   attack                    pointer to the attack structure
  * @param[in]   targets_config_file_path  path to the targets configuration file

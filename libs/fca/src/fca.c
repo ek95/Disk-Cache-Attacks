@@ -786,7 +786,7 @@ TargetFile *fcaAddTargetFile(Attack *attack, char *target_file_path)
 
     // map target file and add to hash map
     if (mapFile(&target_file.mapping_, target_file_path_abs, FILE_ACCESS_READ | FILE_NOATIME,
-                MAPPING_SHARED | MAPPING_ACCESS_READ) != 0)
+                MAPPING_SHARED | MAPPING_ACCESS_READ | MAPPING_ACCESS_EXECUTE) != 0)
     {
         DEBUG_PRINT((DEBUG FAIL "Error " OSAL_EC_FS " at mapFile...\n", OSAL_EC));
         goto error;
@@ -936,7 +936,7 @@ int fcaAddTargetsFromFile(Attack *attack, char *targets_config_file_path)
 
             // map target file
             if (mapFile(&current_target_file.mapping_, current_target_file_path_abs, FILE_ACCESS_READ | FILE_NOATIME,
-                        MAPPING_SHARED | MAPPING_ACCESS_READ) != 0)
+                        MAPPING_SHARED | MAPPING_ACCESS_READ | MAPPING_ACCESS_EXECUTE) != 0)
             {
                 DEBUG_PRINT((DEBUG FAIL "Error " OSAL_EC_FS " at mapFile...\n", OSAL_EC));
                 goto error;
@@ -1172,6 +1172,17 @@ int targetsSampleShouldEvict(Attack *attack)
     // check if eviction is needed
     if (hashMapForEach(&attack->targets_, targetsHmShouldEvictCB, 0) == HM_FE_BREAK)
     {
+        // resample after timeout
+        // makes sense for some attacks which depend on the state of multiple pages
+        if(attack->resample_sleep_time_us_ != 0)
+        {
+            osal_sleep_us(attack->resample_sleep_time_us_);
+            if(hashMapForEach(&attack->targets_, targetsHmCacheStatusCB, 0) != HM_FE_OK)
+            {
+                return -1;
+            }
+        }
+
         return 1;
     }
 
@@ -2497,9 +2508,6 @@ size_t activateWS(ListNode *resident_files_start, size_t resident_files_count, A
         accessed_files_count++;
         resident_files_node = resident_files_node->next_;
     }
-
-    // drain
-    //posix_fadvise(current_cached_file->mapping_.internal_.fd_, 0, PAGE_SIZE, POSIX_MADV_DONTNEED);
 
     return accessed_pages * PAGE_SIZE;
 }

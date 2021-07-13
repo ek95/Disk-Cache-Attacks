@@ -10,6 +10,8 @@
 
 // mincore by default
 #define DEF_FC_STATE_SOURCE FC_SOURCE_MINCORE
+// useful for attacks which depend on multiple pages
+#define DEF_RESAMPLE_SLEEP_TIME_US 0
 // readahead size (/sys/block/xxx/queue/read_ahead_kb)
 #define DEF_FA_WINDOW_SIZE_PAGES 32
 

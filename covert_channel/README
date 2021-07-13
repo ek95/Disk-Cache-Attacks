@@ -11,3 +11,9 @@ https://askubuntu.com/questions/1248092/cant-remove-core18-snap
 
 MADV_DONTNEED
 zap_pte_range->page_remove_rmap
+
+find biggest files recursively
+find . -type f -printf "%s\t%p\n" | sort -n | tail -20
+
+firejail, bubblewrap
+memory cgroup

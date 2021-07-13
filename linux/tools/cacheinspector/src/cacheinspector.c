@@ -287,6 +287,7 @@ int main(int argc, char *argv[])
       printf("mmap: %u\n", page_flags.mmap);
       printf("anon: %u\n", page_flags.anon);
       printf("idle: %u\n", page_flags.idle);
+      printf("readahead: %u\n", page_flags.readahead);
     }
   }
 

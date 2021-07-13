@@ -512,6 +512,7 @@ void configAttackFromDefines(Attack *attack)
     attack->use_attack_ss_ = DEF_USE_ATTACK_SS;
     
     attack->fc_state_source_ = DEF_FC_STATE_SOURCE;
+    attack->resample_sleep_time_us_ = DEF_RESAMPLE_SLEEP_TIME_US;
     attack->fa_window_size_pages_ = DEF_FA_WINDOW_SIZE_PAGES;
 
     // Eviction Set

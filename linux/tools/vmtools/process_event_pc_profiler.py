@@ -19,6 +19,14 @@ import string
 import pdb
 
 
+FITNESS_THRESHOLD_TRAIN=0.8
+CH_RATIOS_SIMILAR_THRESHOLD=0.1
+CH_RATIOS_EVENTS_DISTINGUISHABLE_THRESHOLD=0.8
+# set to zero if you want to ignore readahead in the evaluation
+# linux default: 32 pages
+FAULT_READAHEAD_WINDOW_PAGES=0
+
+
 def createPageCacheHitHeatmap(event_cache_hits, page_range, mapping_page_offset, title,
     pages_per_row=16, show=True, save=False):
     # offset 
@@ -155,10 +163,12 @@ class Classifier:
 
 # requires last event to be the "idle" event!
 class SinglePageHitClassifier(Classifier):
-    def __init__(self, fitness_threshold_train, ch_ratios_filter_threshold, fault_ra_window, debug_heatmaps = False):
+    def __init__(self, fitness_threshold_train, ch_ratios_similar_threshold, ch_ratios_events_distinguishable_threshold,
+        fault_ra_window, debug_heatmaps = False):
         super().__init__(fitness_threshold_train)
         self.optimal_event_file_offset_mappings_ = None
-        self.ch_ratios_filter_threshold_ = ch_ratios_filter_threshold
+        self.ch_ratios_similar_threshold_ = ch_ratios_similar_threshold
+        self.ch_ratios_events_distinguishable_threshold_ = ch_ratios_events_distinguishable_threshold
         self.fault_ra_window_ = fault_ra_window
         self.debug_heatmaps_ = debug_heatmaps
 
@@ -185,7 +195,7 @@ class SinglePageHitClassifier(Classifier):
             # get ch ratio diff
             diff = max_ch_ratios - min_ch_ratios
             # difference small -> common loaded pages across events -> remove (set ch ratio to zero)
-            remove = diff < self.ch_ratios_filter_threshold_
+            remove = diff < self.ch_ratios_similar_threshold_
             # set cells to zero
             mapping["events_ch_ratios_filtered"] = mapping["events_ch_ratios_raw"]
             mapping["events_ch_ratios_filtered"][:, remove] = np.zeros(
@@ -206,8 +216,8 @@ class SinglePageHitClassifier(Classifier):
             events_ch_ratios, i, axis=0), axis=0) for i in range(events_ch_ratios.shape[0])])
 
         # events are similar if neither distinguishable by hit nor by miss with wanted threshold
-        return (np.all(distinguishable_by_hit <= self.fitness_threshold_train_) and 
-            np.all(-distinguishable_by_miss <= self.fitness_threshold_train_))
+        return (np.all(distinguishable_by_hit <= self.ch_ratios_events_distinguishable_threshold_) and 
+            np.all(-distinguishable_by_miss <= self.ch_ratios_events_distinguishable_threshold_))
 
     def groupSimilarEvents(self):
         # check for each mapping
@@ -254,6 +264,9 @@ class SinglePageHitClassifier(Classifier):
         best_candidate = None
         # check each mapping
         for mapping in self.pc_mappings_:
+            # mapping should be skipped at training
+            if "skip" in mapping and mapping["skip"]:
+                continue
             # check event subgroups with wanted group size
             # does not exist -> skip mapping
             if group_size not in mapping["events_ch_ratios_merged_header"]:
@@ -266,28 +279,44 @@ class SinglePageHitClassifier(Classifier):
                     continue
 
                 # calculate event-fitness matrix 
-                # 1) events other than the target are treated as noise
+                # events other than the target are treated as noise
                 # noise is calculated using the root of the sum of the squared ch ratios of all other events 
                 # this sum is always bigger than the maximum ch ratio but smaller than a comparable abs sum 
-                # therefore, lower values are honored a bit less (not so realistic that all events are triggered during one sample run)
-                event_fitness = mapping["events_ch_ratios_merged"][row] - np.sqrt(np.sum(
-                    mapping["events_ch_ratios_merged"]**2, axis=0) - mapping["events_ch_ratios_merged"][row]**2)
-                # 2) (optionally) readahead window is treated as noise
+                # therefore, lower values are honored a bit less 
+                # (not so realistic that all events are triggered during one sample run)
+                #event_fitness = mapping["events_ch_ratios_merged"][row] - np.sqrt(np.sum(
+                #    mapping["events_ch_ratios_merged"]**2, axis=0) - mapping["events_ch_ratios_merged"][row]**2)
+                # events other than the target are treated as noise
+                # noise is calculated using the sum of the ch ratios of all other events
+                # (w.c. estimation, assumes all events are occuring in parallel)             
+                event_fitness = mapping["events_ch_ratios_merged"][row] - (np.sum(
+                    mapping["events_ch_ratios_merged"], axis=0) - mapping["events_ch_ratios_merged"][row])
+                # (optionally) readahead window is treated as noise
+                # TODO windows?
                 if self.fault_ra_window_ != 0:
                     event_fitness_ra = event_fitness.copy()
                     back_trigger_ra_window = int(self.fault_ra_window_ / 2) - 1
                     front_trigger_ra_window = int(self.fault_ra_window_ / 2)
                     # use raw matrix, in later ones values are removed or merged which we do not want here
-                    rh_ch_sum = np.sqrt(np.sum(mapping["events_ch_ratios_raw"]**2, axis=0))
+                    #rh_ch_sum = np.sqrt(np.sum(mapping["events_ch_ratios_raw"]**2, axis=0))
+                    rh_ch_sum = np.sum(mapping["events_ch_ratios_raw"], axis=0)
                     for p in range(event_fitness.shape[0]):
                         # readahead behaves different inside the first possible window
                         # (front readahead increases if less than the default amount of back readahead was made)
                         if p < self.fault_ra_window_:
-                            event_fitness_ra[p] = event_fitness[p] - np.sqrt(np.sum(rh_ch_sum[p - (self.fault_ra_window_ - 1) : p]**2) + 
-                                np.sum(rh_ch_sum[p + 1 : p + 1 + front_trigger_ra_window ]**2)) 
+                            #event_fitness_ra[p] = event_fitness[p] - np.sqrt(
+                            #    np.sum(rh_ch_sum[p - (self.fault_ra_window_ - 1) : p]**2) + 
+                            #    np.sum(rh_ch_sum[p + 1 : p + 1 + front_trigger_ra_window]**2)) 
+                            event_fitness_ra[p] = event_fitness[p] - (
+                                np.sum(rh_ch_sum[p - (self.fault_ra_window_ - 1) : p]) + 
+                                np.sum(rh_ch_sum[p + 1 : p + 1 + front_trigger_ra_window]))                                 
                         else:
-                            event_fitness_ra[p] = event_fitness[p] - np.sqrt(np.sum(rh_ch_sum[p - back_trigger_ra_window : p]**2) + 
-                                np.sum(rh_ch_sum[p + 1 : p + 1 + front_trigger_ra_window ]**2))  
+                            #event_fitness_ra[p] = event_fitness[p] - np.sqrt(
+                            #    np.sum(rh_ch_sum[p - back_trigger_ra_window : p]**2) + 
+                            #    np.sum(rh_ch_sum[p + 1 : p + 1 + front_trigger_ra_window]**2))  
+                            event_fitness_ra[p] = event_fitness[p] - (
+                                np.sum(rh_ch_sum[p - back_trigger_ra_window : p]) + 
+                                np.sum(rh_ch_sum[p + 1 : p + 1 + front_trigger_ra_window]))                             
                     event_fitness = event_fitness_ra
                 candidate_page = np.argmax(event_fitness)
                 candidate_page_fitness = event_fitness[candidate_page]
@@ -305,6 +334,7 @@ class SinglePageHitClassifier(Classifier):
                 #  better candidate -> remember
                 best_candidate = {
                     "fitness": candidate_page_fitness,
+                    "ch_ratio": mapping["events_ch_ratios_merged"][row][candidate_page],
                     "file": mapping["path"],
                     "offset": mapping["file_offset"] + candidate_page * mmap.PAGESIZE,
                     "current_pfn": mapping["pfns"][candidate_page],
@@ -403,7 +433,8 @@ class SinglePageHitClassifier(Classifier):
                 show_page_range_len = 256 if show_page_range_len > 256 else show_page_range_len
                 for event in result["event_group"]:
                     createPageCacheHitHeatmap(result["link_to_mapping"]["events_ch_ratios_raw"][event], 
-                        (show_page_range_start, show_page_range_len), mapping_offset_pages, self.events_[event][0] + "\n" + result["file"])
+                        (show_page_range_start, show_page_range_len), mapping_offset_pages, 
+                        self.events_[event][0] + "\n" + result["file"])
                 input("Press key for next event group...\n")
 
 def dofakeEvent():
@@ -430,8 +461,8 @@ def doKeyboardEvent(sc):
 
 
 def prepareKeyEvents():
-    # main part of keyboard - except TAB and extended scancode keys
-    scan_codes = [0x29, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, #0x0f, 
+    # main part of keyboard - except extended scancode keys
+    scan_codes = [0x29, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 
         0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c, 
         0x3a, 0x1e, 0x1f, 0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x2b, 
         0x2a, 0x56, 0x2c, 0x2d, 0x2e, 0x2f, 0x30, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 
@@ -465,7 +496,8 @@ args = parser.parse_args()
 
 signal.signal(signal.SIGINT, signal.default_int_handler)
 
-classifier = SinglePageHitClassifier(0.7, 0.1, 32, True)
+classifier = SinglePageHitClassifier(FITNESS_THRESHOLD_TRAIN, CH_RATIOS_SIMILAR_THRESHOLD, 
+    CH_RATIOS_EVENTS_DISTINGUISHABLE_THRESHOLD, FAULT_READAHEAD_WINDOW_PAGES, False)
 
 events = None
 pid = None
@@ -487,8 +519,9 @@ elif args.collect:
     # prepare events
     events = []
     if args.event_user:
-        events = [(x, functools.partial(doUserEventNoInput, x) if args.event_user_no_input else functools.partial(doUserEvent, x))
-                  for x in args.event_user]
+        events = [(x, functools.partial(doUserEventNoInput, x) if args.event_user_no_input 
+                    else functools.partial(doUserEvent, x))
+                    for x in args.event_user]
     else:
         events = autoCampaignPrepareEvents()
 
