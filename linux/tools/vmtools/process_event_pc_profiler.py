@@ -19,12 +19,31 @@ import string
 import pdb
 
 
-FITNESS_THRESHOLD_TRAIN=0.8
-CH_RATIOS_SIMILAR_THRESHOLD=0.1
-CH_RATIOS_EVENTS_DISTINGUISHABLE_THRESHOLD=0.8
-# set to zero if you want to ignore readahead in the evaluation
+
+# wait a bit after a event was triggered to allow all accesses to happen
+WAIT_AFTER_EVENT_S = 0.1
+# wait longer in case of idle event (we also want to catch less frequent periodic page accesses)
+IDLE_EVENT_WAIT_S = 1
+FITNESS_THRESHOLD_TRAIN = 0.8
+CH_RATIOS_SIMILAR_THRESHOLD = 0.1
+CH_RATIOS_EVENTS_DISTINGUISHABLE_THRESHOLD = 0.8
+# how should the speculative reading of a larger page cluster at page faults be handled
+# "none":   assume no page fault clustering exists
+# "single-event": assume the attacker suppresssed the page fault clustering (by keeping surrounding pages active)
+#                 and only one event occurs per sample 
+#                 to help at classification, add pages which help the attacker to distinguish between
+#                 event page fault clusters in case they are overlapping (and therefore can not be suppresssed)
+#                 (== add fault cluster corner pages which help to determine which page triggered the 
+#                  initial fault + only do this if these pages are otherwise not used)
+#                 this only works if the events with overlapping fault cluster windows
+#                 are assumed to be not triggered in parallel, further evaluation is left for the user
+# "noise": trigger readahead as noise, substract the sum of ch ratios of pages that might trigger 
+#          the caching of the current candidate page from its ch ratio
 # linux default: 32 pages
-FAULT_READAHEAD_WINDOW_PAGES=0
+HANDLE_FAULT_RA="single-event"
+# linux 32 pages
+FAULT_RA_WINDOW_PAGES=32
+
 
 
 def createPageCacheHitHeatmap(event_cache_hits, page_range, mapping_page_offset, title,
@@ -36,7 +55,7 @@ def createPageCacheHitHeatmap(event_cache_hits, page_range, mapping_page_offset,
     data = [event_cache_hits[i : i + pages_per_row]
             for i in range(offset, offset + length, pages_per_row)]
     if len(data) > 1 and len(data[-1]) < pages_per_row:
-        data[-1] += [0] * (pages_per_row - len(data[-1]))
+        data[-1] = np.pad(data[-1], (0, pages_per_row - len(data[-1])))
     # generate x labels
     x_labels = ["{:x}".format(o) for o in range(
         0, len(data[0]) if len(data) == 1 else pages_per_row)]
@@ -164,11 +183,12 @@ class Classifier:
 # requires last event to be the "idle" event!
 class SinglePageHitClassifier(Classifier):
     def __init__(self, fitness_threshold_train, ch_ratios_similar_threshold, ch_ratios_events_distinguishable_threshold,
-        fault_ra_window, debug_heatmaps = False):
+        handle_fault_ra, fault_ra_window, debug_heatmaps = False):
         super().__init__(fitness_threshold_train)
         self.optimal_event_file_offset_mappings_ = None
         self.ch_ratios_similar_threshold_ = ch_ratios_similar_threshold
         self.ch_ratios_events_distinguishable_threshold_ = ch_ratios_events_distinguishable_threshold
+        self.handle_fault_ra_ = handle_fault_ra
         self.fault_ra_window_ = fault_ra_window
         self.debug_heatmaps_ = debug_heatmaps
 
@@ -264,9 +284,6 @@ class SinglePageHitClassifier(Classifier):
         best_candidate = None
         # check each mapping
         for mapping in self.pc_mappings_:
-            # mapping should be skipped at training
-            if "skip" in mapping and mapping["skip"]:
-                continue
             # check event subgroups with wanted group size
             # does not exist -> skip mapping
             if group_size not in mapping["events_ch_ratios_merged_header"]:
@@ -291,24 +308,26 @@ class SinglePageHitClassifier(Classifier):
                 # (w.c. estimation, assumes all events are occuring in parallel)             
                 event_fitness = mapping["events_ch_ratios_merged"][row] - (np.sum(
                     mapping["events_ch_ratios_merged"], axis=0) - mapping["events_ch_ratios_merged"][row])
+                # handle readahead
                 # (optionally) readahead window is treated as noise
-                # TODO windows?
-                if self.fault_ra_window_ != 0:
+                if self.handle_fault_ra_ == "noise":  
+                    # TODO windows?
+                    back_trigger_ra_window = int(self.fault_ra_window_ / 2) - 1    
+                    front_trigger_ra_window = int(self.fault_ra_window_ / 2)  
                     event_fitness_ra = event_fitness.copy()
-                    back_trigger_ra_window = int(self.fault_ra_window_ / 2) - 1
-                    front_trigger_ra_window = int(self.fault_ra_window_ / 2)
                     # use raw matrix, in later ones values are removed or merged which we do not want here
                     #rh_ch_sum = np.sqrt(np.sum(mapping["events_ch_ratios_raw"]**2, axis=0))
                     rh_ch_sum = np.sum(mapping["events_ch_ratios_raw"], axis=0)
                     for p in range(event_fitness.shape[0]):
                         # readahead behaves different inside the first possible window
-                        # (front readahead increases if less than the default amount of back readahead was made)
+                        # (front readahead increases if less than the default amount of back readahead was made
+                        #  so that always fault_ra_window pages are read)
                         if p < self.fault_ra_window_:
                             #event_fitness_ra[p] = event_fitness[p] - np.sqrt(
                             #    np.sum(rh_ch_sum[p - (self.fault_ra_window_ - 1) : p]**2) + 
                             #    np.sum(rh_ch_sum[p + 1 : p + 1 + front_trigger_ra_window]**2)) 
                             event_fitness_ra[p] = event_fitness[p] - (
-                                np.sum(rh_ch_sum[p - (self.fault_ra_window_ - 1) : p]) + 
+                                np.sum(rh_ch_sum[0 : p]) + 
                                 np.sum(rh_ch_sum[p + 1 : p + 1 + front_trigger_ra_window]))                                 
                         else:
                             #event_fitness_ra[p] = event_fitness[p] - np.sqrt(
@@ -318,6 +337,7 @@ class SinglePageHitClassifier(Classifier):
                                 np.sum(rh_ch_sum[p - back_trigger_ra_window : p]) + 
                                 np.sum(rh_ch_sum[p + 1 : p + 1 + front_trigger_ra_window]))                             
                     event_fitness = event_fitness_ra
+
                 candidate_page = np.argmax(event_fitness)
                 candidate_page_fitness = event_fitness[candidate_page]
                 # does not fullfil our minimum requirements -> continue
@@ -331,10 +351,31 @@ class SinglePageHitClassifier(Classifier):
                         candidate_page_fitness <= best_candidate["fitness"]):
                     continue
 
+                # find fault ra cluster corner pages
+                # can be used to help classification in case of overlapping page fault clusters
+                ra_corner_pages_ch_ratios = []
+                if self.handle_fault_ra_ == "single-event":
+                    # TODO windows?
+                    back_ra_window = int(self.fault_ra_window_ / 2)
+                    front_ra_window = int(self.fault_ra_window_ / 2) - 1 
+                    # take the highest value either from the current mapping or idle
+                    assist_ra_ch_ratios = np.maximum(mapping["events_ch_ratios_merged"][row], 
+                        mapping["events_ch_ratios_merged"][-1])
+                    if candidate_page < back_ra_window:
+                        back_corner_page = 0 if candidate_page != 0 else -1
+                        front_corner_page = min(candidate_page + front_ra_window + back_ra_window - candidate_page, mapping["events_ch_ratios_merged"][row].shape[0] - 1)   
+                    else:
+                        back_corner_page = candidate_page - back_ra_window
+                        front_corner_page = min(candidate_page + front_ra_window, mapping["events_ch_ratios_merged"][row].shape[0] - 1)   
+                    back_corner_ch_ratio = assist_ra_ch_ratios[back_corner_page] if back_corner_page != -1 else -1
+                    front_corner_ch_ratio = assist_ra_ch_ratios[front_corner_page]
+                    ra_corner_pages_ch_ratios=[(int(back_corner_page), float(back_corner_ch_ratio)), (int(front_corner_page), float(front_corner_ch_ratio))]
+
                 #  better candidate -> remember
                 best_candidate = {
                     "fitness": candidate_page_fitness,
                     "ch_ratio": mapping["events_ch_ratios_merged"][row][candidate_page],
+                    "ra_corner_pages_ch_ratios": ra_corner_pages_ch_ratios,
                     "file": mapping["path"],
                     "offset": mapping["file_offset"] + candidate_page * mmap.PAGESIZE,
                     "current_pfn": mapping["pfns"][candidate_page],
@@ -437,9 +478,9 @@ class SinglePageHitClassifier(Classifier):
                         self.events_[event][0] + "\n" + result["file"])
                 input("Press key for next event group...\n")
 
-def dofakeEvent():
+def doFakeEvent():
     # sleep a bit
-    time.sleep(0.1)
+    time.sleep(IDLE_EVENT_WAIT_S)
 
 
 def doUserEventNoInput(event):
@@ -457,7 +498,7 @@ def doUserEvent(event):
 def doKeyboardEvent(sc):
     keyboard.press(sc)
     keyboard.release(sc)
-    time.sleep(0.1)
+    time.sleep(WAIT_AFTER_EVENT_S)
 
 
 def prepareKeyEvents():
@@ -469,7 +510,7 @@ def prepareKeyEvents():
         0x1d, 0x38, 0x39]
     events = [("sc_" + hex(x), functools.partial(doKeyboardEvent, x))
               for x in scan_codes]
-    events.append(("fake", dofakeEvent))
+    events.append(("fake", doFakeEvent))
     return events
 
 
@@ -497,7 +538,7 @@ args = parser.parse_args()
 signal.signal(signal.SIGINT, signal.default_int_handler)
 
 classifier = SinglePageHitClassifier(FITNESS_THRESHOLD_TRAIN, CH_RATIOS_SIMILAR_THRESHOLD, 
-    CH_RATIOS_EVENTS_DISTINGUISHABLE_THRESHOLD, FAULT_READAHEAD_WINDOW_PAGES, False)
+    CH_RATIOS_EVENTS_DISTINGUISHABLE_THRESHOLD, HANDLE_FAULT_RA, FAULT_RA_WINDOW_PAGES, False)
 
 events = None
 pid = None

@@ -3,15 +3,6 @@ import os
 import signal
 
 
-# convert python int value to c long compatible int
-def asClongCompatible(value):
-    value = int(value)
-    if value > 2**63 - 1:
-        return -(2**64 - value)
-    else:
-        return value
-
-
 # ctype extension
 class StructureExt(Structure):
     def pack(self):
@@ -247,7 +238,7 @@ class PageUsageTracker:
             if pfn == -1:
                 continue
             # read state
-            offset = int(pfn / 64) * 8 #offset = asClongCompatible(int(pfn / 64) * 8)
+            offset = int(pfn / 64) * 8 
             raw = os.pread(self.page_idle_bitmap_fd_, 8, offset)
             number = int.from_bytes(raw, "little")
             # check if page was accessed (not idle anymore)
