@@ -73,9 +73,7 @@ typedef struct {
   uint64_t zero_page : 1;
   uint64_t idle : 1;
   uint64_t pgtable : 1;
-  uint64_t unused1 : 22;
-  uint64_t readahead : 1;
-  uint64_t unused2 : 16;
+  uint64_t unused : 37;
 } KPageFlagsEntry;
 
 typedef union {

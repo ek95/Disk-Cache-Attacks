@@ -26,7 +26,7 @@ WAIT_AFTER_EVENT_S = 0.1
 IDLE_EVENT_WAIT_S = 1
 FITNESS_THRESHOLD_TRAIN = 0.8
 CH_RATIOS_SIMILAR_THRESHOLD = 0.1
-CH_RATIOS_EVENTS_DISTINGUISHABLE_THRESHOLD = 0.8
+CH_RATIOS_EVENTS_SIMILAR_THRESHOLD = 0.5
 # how should the speculative reading of a larger page cluster at page faults be handled
 # "none":   assume no page fault clustering exists
 # "single-event": assume the attacker suppresssed the page fault clustering (by keeping surrounding pages active)
@@ -187,7 +187,7 @@ class SinglePageHitClassifier(Classifier):
         super().__init__(fitness_threshold_train)
         self.optimal_event_file_offset_mappings_ = None
         self.ch_ratios_similar_threshold_ = ch_ratios_similar_threshold
-        self.ch_ratios_events_distinguishable_threshold_ = ch_ratios_events_distinguishable_threshold
+        self.ch_ratios_events_similar_threshold_ = ch_ratios_events_distinguishable_threshold
         self.handle_fault_ra_ = handle_fault_ra
         self.fault_ra_window_ = fault_ra_window
         self.debug_heatmaps_ = debug_heatmaps
@@ -206,6 +206,7 @@ class SinglePageHitClassifier(Classifier):
         for mapping in self.pc_mappings_:
             mapping["events_ch_ratios_raw"] = mapping["events_pfn_accesses"] / self.samples_
 
+    # TODO might remove this????
     def filterPfnsWithSimilarChRatio(self):
         for mapping in self.pc_mappings_:
             # get min ch ratio per address
@@ -226,18 +227,17 @@ class SinglePageHitClassifier(Classifier):
         if events_ch_ratios.shape[0] == 1:
             return True
 
-        # calculate how good each event is distinguishable considering hits
-        # (ch ratio of event is substracted with corresponding max. ch ratio of other events)
-        distinguishable_by_hit = events_ch_ratios - np.array([np.max(np.delete(
-            events_ch_ratios, i, axis=0), axis=0) for i in range(events_ch_ratios.shape[0])])
-        # calculate how good each event is distinguishable considering misses
-        # (ch ratio of event is substracted with corresponding min. ch ratio of other events)
-        distinguishable_by_miss = events_ch_ratios - np.array([np.min(np.delete(
-            events_ch_ratios, i, axis=0), axis=0) for i in range(events_ch_ratios.shape[0])])
+        # caluclate differences between all unique event pairs
+        differences = np.zeros(int(events_ch_ratios.shape[0] * (events_ch_ratios.shape[0] - 1) / 2))
+        i = 0
+        for e1 in range(events_ch_ratios.shape[0] - 1):
+            for e2 in range(e1 + 1, events_ch_ratios.shape[0]):
+                differences[i] = np.max(np.abs(events_ch_ratios[e1] - events_ch_ratios[e2]))
+                i+=1
 
-        # events are similar if neither distinguishable by hit nor by miss with wanted threshold
-        return (np.all(distinguishable_by_hit <= self.ch_ratios_events_distinguishable_threshold_) and 
-            np.all(-distinguishable_by_miss <= self.ch_ratios_events_distinguishable_threshold_))
+        # events are similar if the maximal value of the differences between 
+        # all unique pairs is below a certain threshold
+        return np.max(differences) <= self.ch_ratios_events_similar_threshold_
 
     def groupSimilarEvents(self):
         # check for each mapping
@@ -360,7 +360,9 @@ class SinglePageHitClassifier(Classifier):
                     front_ra_window = int(self.fault_ra_window_ / 2) - 1 
                     # take the highest value either from the current mapping or idle
                     assist_ra_ch_ratios = np.maximum(mapping["events_ch_ratios_merged"][row], 
-                        mapping["events_ch_ratios_merged"][-1])
+                        mapping["events_ch_ratios_raw"][-1])
+                    if candidate_page == 0x126b:
+                        pdb.set_trace()
                     if candidate_page < back_ra_window:
                         back_corner_page = 0 if candidate_page != 0 else -1
                         front_corner_page = min(candidate_page + front_ra_window + back_ra_window - candidate_page, mapping["events_ch_ratios_merged"][row].shape[0] - 1)   
@@ -427,7 +429,7 @@ class SinglePageHitClassifier(Classifier):
         self.computeChRatios()
         # 2. Filter pfns with similar ch ratio
         #   -> set all ch ratios accross events to zero
-        self.filterPfnsWithSimilarChRatio()
+        #self.filterPfnsWithSimilarChRatio()
         # 3. Group similar events
         self.groupSimilarEvents()
         # 4. Search optimal set of event-page-hit mappings to describe events
@@ -538,7 +540,7 @@ args = parser.parse_args()
 signal.signal(signal.SIGINT, signal.default_int_handler)
 
 classifier = SinglePageHitClassifier(FITNESS_THRESHOLD_TRAIN, CH_RATIOS_SIMILAR_THRESHOLD, 
-    CH_RATIOS_EVENTS_DISTINGUISHABLE_THRESHOLD, HANDLE_FAULT_RA, FAULT_RA_WINDOW_PAGES, False)
+    CH_RATIOS_EVENTS_SIMILAR_THRESHOLD, HANDLE_FAULT_RA, FAULT_RA_WINDOW_PAGES, False)
 
 events = None
 pid = None

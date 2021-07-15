@@ -45,6 +45,7 @@ int main(int argc, char *argv[])
   char input[INPUT_LINE_SIZE] = {0};
   char last_input[INPUT_LINE_SIZE] = {0};
   PageFlagsFd pageflags_fd = PAGE_FLAGS_FD_STATIC_INIT;
+  PageMapEntry pagemap_entry;
   KPageFlagsEntry page_flags;
 
   changeFcStateSource(FC_SOURCE_MINCORE);
@@ -274,8 +275,22 @@ int main(int argc, char *argv[])
         continue;
       }
 
-      // print interesting page flags
-      if (getKPageFlagsEntryVpn(&pageflags_fd, &page_flags, ((size_t)file_mapping.addr_ + offset) / PAGE_SIZE) != 0)
+      // get pagemap entry
+      if (getPagemapEntryVpn(&pageflags_fd, &pagemap_entry, ((size_t)file_mapping.addr_ + offset) / PAGE_SIZE) != 0)
+      {
+        printf("Error (%s) at getPagemapEntryVpn, continuing\n", strerror(errno));
+        continue;
+      }
+      if(!pagemap_entry.present)
+      {
+        printf("Pagetable entry is not present!\n");
+        continue;
+      }
+      printf("PFN: 0x%lx\n", (long unsigned int) pagemap_entry.present_swap.present_info.pfn);
+
+
+      // get interesting page flags
+      if (getKPageFlagsEntryPfn(&pageflags_fd, &page_flags, pagemap_entry.present_swap.present_info.pfn) != 0)
       {
         printf("Error (%s) at getKPageFlagsEntryVpn, continuing\n", strerror(errno));
         continue;
@@ -287,7 +302,6 @@ int main(int argc, char *argv[])
       printf("mmap: %u\n", page_flags.mmap);
       printf("anon: %u\n", page_flags.anon);
       printf("idle: %u\n", page_flags.idle);
-      printf("readahead: %u\n", page_flags.readahead);
     }
   }
 
