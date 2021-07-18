@@ -1,6 +1,7 @@
 from ctypes import *
 import os
 import signal
+import mmap
 
 
 # ctype extension
@@ -30,6 +31,22 @@ PROCESS_PAGEMAP_PATH_TEMPLATE = "/proc/{}/pagemap"
 PROCESS_MEM_PATH_TEMPLATE = "/proc/{}/mem"
 KPAGEFLAGS_PATH = "/proc/kpageflags"
 PAGE_IDLE_BITMAP_PATH = "/sys/kernel/mm/page_idle/bitmap"
+LIBC = CDLL("libc.so.6")
+
+
+def mlockFile(file):
+    # map whole file
+    with open(file, "rb") as file:
+        mm = mmap.mmap(file.fileno(), 0, access=mmap.ACCESS_READ)
+    # get address + length
+    mm_obj = py_object(mm)
+    address = c_void_p()
+    length = c_ssize_t()
+    pythonapi.PyObject_AsReadBuffer(mm_obj, byref(address), byref(length))
+    # mlock whole file
+    if LIBC.mlock(address, length) != 0:
+        raise RuntimeError("mlock() failed: " + str(get_errno()))
+    return mm
 
 
 class ProcessControl:

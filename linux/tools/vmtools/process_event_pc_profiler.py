@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-# NOTE only works as long as system is not thrashing
-# (exermined pages have to stay in memory)
+# NOTE locks examined memory-mapped files into memory
+# TODO if target process maps a lot of files this might fail!
 import argparse
 import vmtools
 import mmap
@@ -19,12 +19,11 @@ import string
 import pdb
 
 
-
 # wait a bit after a event was triggered to allow all accesses to happen
-WAIT_AFTER_EVENT_S = 0.1
+WAIT_AFTER_EVENT_S = 2
 # wait longer in case of idle event (we also want to catch less frequent periodic page accesses)
-IDLE_EVENT_WAIT_S = 1
-FITNESS_THRESHOLD_TRAIN = 0.8
+IDLE_EVENT_WAIT_S = 30
+FITNESS_THRESHOLD_TRAIN = 0.7
 CH_RATIOS_SIMILAR_THRESHOLD = 0.1
 CH_RATIOS_EVENTS_SIMILAR_THRESHOLD = 0.5
 # how should the speculative reading of a larger page cluster at page faults be handled
@@ -107,6 +106,51 @@ def targetGetPcMappings(pid):
     maps = maps_reader.getMapsByPermissions(
         read=True, write=False, only_file=True)
 
+    # merge overlapping file mappings if existing (reduces senseless computations)
+    for m1 in range(len(maps) - 1):
+        if maps[m1] is None:
+            continue
+        for m2 in range(m1 + 1, len(maps)):
+            if (maps[m2] is not None and 
+                maps[m1]["path"] == maps[m2]["path"]):
+                # check if mappings overlap
+                # order mappings by file start position
+                if maps[m1]["file_offset"] <= maps[m2]["file_offset"]:
+                    first_mapping = m1
+                    second_mapping = m2
+                else:
+                    first_mapping = m2
+                    second_mapping = m1 
+                # check if overlapping
+                if(maps[second_mapping]["file_offset"] < 
+                    maps[first_mapping]["file_offset"] + maps[first_mapping]["size"]):
+                    delta = ((maps[second_mapping]["file_offset"] + maps[second_mapping]["size"]) - 
+                        (maps[first_mapping]["file_offset"] + maps[first_mapping]["size"]))
+                    print("Merge")
+                    pdb.set_trace()
+                    # overlapping, merge
+                    maps[first_mapping]["size"] += delta
+                    maps[first_mapping]["addresses"][1] += delta
+                    # mark second mapping for deletion
+                    maps[second_mapping] = None 
+            # might have been merged before
+            if maps[m1] is None:
+                break
+    # filter None values
+    maps = list(filter(None, maps))
+
+    # mlock files into memory (so that pfn stays the same)
+    # NOTE this might fail if too less physical memory is available
+    locked_files = set()
+    for map in maps:
+        if map["path"] in locked_files:
+            continue 
+        try:
+            map["mm"] = vmtools.mlockFile(map["path"])
+        except FileNotFoundError:
+            pass
+        locked_files = map["path"]
+
     # initialise page mapping reader
     page_map_reader = vmtools.PageMapReader(pid)
     # get pfns for maps
@@ -141,6 +185,12 @@ class Classifier:
     def collect(self, events, samples, pid):
         self.events_ = events
         self.samples_ = samples
+
+        # warm-up page tables + page cache
+        print("Executing events for warm-up...")
+        for event in self.events_:
+            event[1]()
+        time.sleep(2)
 
         # get library mappings + pfns
         pc_mappings = targetGetPcMappings(pid)
@@ -205,22 +255,7 @@ class SinglePageHitClassifier(Classifier):
     def computeChRatios(self):
         for mapping in self.pc_mappings_:
             mapping["events_ch_ratios_raw"] = mapping["events_pfn_accesses"] / self.samples_
-
-    # TODO might remove this????
-    def filterPfnsWithSimilarChRatio(self):
-        for mapping in self.pc_mappings_:
-            # get min ch ratio per address
-            min_ch_ratios = np.min(mapping["events_ch_ratios_raw"], axis=0)
-            # get max ch ratio per address
-            max_ch_ratios = np.max(mapping["events_ch_ratios_raw"], axis=0)
-            # get ch ratio diff
-            diff = max_ch_ratios - min_ch_ratios
-            # difference small -> common loaded pages across events -> remove (set ch ratio to zero)
-            remove = diff < self.ch_ratios_similar_threshold_
-            # set cells to zero
-            mapping["events_ch_ratios_filtered"] = mapping["events_ch_ratios_raw"]
-            mapping["events_ch_ratios_filtered"][:, remove] = np.zeros(
-                (mapping["events_ch_ratios_raw"].shape[0], np.sum(remove)))
+        
 
     def areEventsSimilar(self, events_ch_ratios):
         # short path: one event is always similar to itsself ;)
@@ -244,10 +279,10 @@ class SinglePageHitClassifier(Classifier):
         for mapping in self.pc_mappings_:
             # process all events
             events_to_process = list(
-                range(mapping["events_ch_ratios_filtered"].shape[0]))
+                range(mapping["events_ch_ratios_raw"].shape[0]))
             mapping["events_ch_ratios_merged_header"] = {}
             mapping["events_ch_ratios_merged"] = np.zeros(
-                (0, mapping["events_ch_ratios_filtered"].shape[1]))
+                (0, mapping["events_ch_ratios_raw"].shape[1]))
             
             while len(events_to_process) != 0:
                 target_event = events_to_process.pop(0)
@@ -255,7 +290,7 @@ class SinglePageHitClassifier(Classifier):
                 not_merged_events = []
                 for other_event in events_to_process:
                     candidate_events = merged_events + [other_event]
-                    if self.areEventsSimilar(mapping["events_ch_ratios_filtered"][candidate_events, :]):
+                    if self.areEventsSimilar(mapping["events_ch_ratios_raw"][candidate_events, :]):
                         # greedily collect merged events
                         # once merged they are one group as they are not distinguishable!
                         # if a new event makes the group distinguishable again, 
@@ -271,7 +306,7 @@ class SinglePageHitClassifier(Classifier):
                 mapping["events_ch_ratios_merged_header"][len(merged_events)].append(
                     (mapping["events_ch_ratios_merged"].shape[0], set(merged_events)))
                 mapping["events_ch_ratios_merged"] = np.vstack((mapping["events_ch_ratios_merged"], 
-                    np.mean(mapping["events_ch_ratios_filtered"][merged_events, :], axis=0)))
+                    np.mean(mapping["events_ch_ratios_raw"][merged_events, :], axis=0)))
 
                 # continue processing with missing events
                 events_to_process = not_merged_events        
@@ -361,8 +396,6 @@ class SinglePageHitClassifier(Classifier):
                     # take the highest value either from the current mapping or idle
                     assist_ra_ch_ratios = np.maximum(mapping["events_ch_ratios_merged"][row], 
                         mapping["events_ch_ratios_raw"][-1])
-                    if candidate_page == 0x126b:
-                        pdb.set_trace()
                     if candidate_page < back_ra_window:
                         back_corner_page = 0 if candidate_page != 0 else -1
                         front_corner_page = min(candidate_page + front_ra_window + back_ra_window - candidate_page, mapping["events_ch_ratios_merged"][row].shape[0] - 1)   
@@ -410,34 +443,30 @@ class SinglePageHitClassifier(Classifier):
                 # either a candidate is found for this event and group size
                 # or we have to try again with a larger group size
                 if best_candidate is None:
+                    # add again -> no candidate was found
                     events_to_search_next.add(target_event)
                 else:
                     events_covered = events_covered.union(
                         best_candidate["event_group"])
                     events_to_search -= best_candidate["event_group"]
                     found_optimal_mappings.append(best_candidate)
-                    # events to search next not reduced
             events_to_search = events_to_search_next
 
-        if len(events_to_search) != 0:
-            return None
-
-        return found_optimal_mappings
+        # also return events_to_search which contains events for which no mapping 
+        # was found
+        return found_optimal_mappings, list(events_to_search)
 
     def train(self):
         # 1. Compute raw cache-hit ratios
         self.computeChRatios()
-        # 2. Filter pfns with similar ch ratio
-        #   -> set all ch ratios accross events to zero
-        #self.filterPfnsWithSimilarChRatio()
-        # 3. Group similar events
+        # 2. Group similar events
         self.groupSimilarEvents()
-        # 4. Search optimal set of event-page-hit mappings to describe events
+        # 3. Search optimal set of event-page-hit mappings to describe events
         #   -> fails if not all events are describeable using single page hits
-        self.optimal_event_file_offset_mappings_ = self.findEventSinglePageHitMappings()
-        if self.optimal_event_file_offset_mappings_ is None:
-            print("Training failed - could not find suitable pages!")
-            return None
+        self.optimal_event_file_offset_mappings_, events_no_mapping = self.findEventSinglePageHitMappings()
+        if len(events_no_mapping) != 0:
+            print("WARNING - not for every event a suitable page was found:")
+            print(self.getEventGroupLabel(events_no_mapping))
         results = {
             "samples": self.samples_,
             "event_strings": [e[0] for e in self.events_],
@@ -505,11 +534,11 @@ def doKeyboardEvent(sc):
 
 def prepareKeyEvents():
     # main part of keyboard - except extended scancode keys
-    scan_codes = [0x29, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 
-        0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c, 
-        0x3a, 0x1e, 0x1f, 0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x2b, 
-        0x2a, 0x56, 0x2c, 0x2d, 0x2e, 0x2f, 0x30, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 
-        0x1d, 0x38, 0x39]
+    scan_codes = [0x29]#, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 
+        #0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c, 
+        #0x3a, 0x1e, 0x1f, 0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x2b, 
+        #0x2a, 0x56, 0x2c, 0x2d, 0x2e, 0x2f, 0x30, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 
+        #0x1d, 0x38, 0x39]
     events = [("sc_" + hex(x), functools.partial(doKeyboardEvent, x))
               for x in scan_codes]
     events.append(("fake", doFakeEvent))
@@ -537,6 +566,10 @@ parser.add_argument("--tracer", action="store_true",
 parser.add_argument("--save", type=str, help="saves results into json file")
 args = parser.parse_args()
 
+if not (args.collect or args.load) and not args.tracer:
+    parser.print_usage()
+    exit(-1)
+
 signal.signal(signal.SIGINT, signal.default_int_handler)
 
 classifier = SinglePageHitClassifier(FITNESS_THRESHOLD_TRAIN, CH_RATIOS_SIMILAR_THRESHOLD, 
@@ -554,8 +587,14 @@ if args.load:
     pc_mappings = results_json["raw_data"]
     for mapping in pc_mappings:
         mapping["events_pfn_accesses"] = np.array(mapping["events_pfn_accesses"])
+   
     # load saved raw data
     classifier.loadRawData(events, samples, pc_mappings)
+    # process data
+    # requires last event to be the "idle" event!
+    results = classifier.train()
+    # print results
+    classifier.printResults()
 elif args.collect:
     pid = args.collect[0]
     samples = args.collect[1]
@@ -572,22 +611,13 @@ elif args.collect:
     print("Starting in 5s...")
     time.sleep(5)
 
-    # warm-up page cache
-    print("Executing events for warm-up...")
-    for event in events:
-        event[1]()
-
     # collect page access data from process
     classifier.collect(events, samples, pid)
-else:
-    print("Wrong usage: Consult help.")
-    exit(-1)
-
-# process data
-# requires last event to be the "idle" event!
-results = classifier.train()
-# print results
-classifier.printResults()
+    # process data
+    # requires last event to be the "idle" event!
+    results = classifier.train()
+    # print results
+    classifier.printResults()
 
 # optional: save data
 # transform numpy to python structures
@@ -597,9 +627,10 @@ if args.save:
                                            for x in mapping["events_pfn_accesses"]]
         # remove not needed data
         del mapping["events_ch_ratios_raw"]
-        del mapping["events_ch_ratios_filtered"]
         del mapping["events_ch_ratios_merged_header"]
         del mapping["events_ch_ratios_merged"]  
+        if "mm" in mapping:
+            del mapping["mm"]
     for mapping in results["optimal_event_file_offset_mappings"]: 
         mapping["offset"] = int(mapping["offset"])
         mapping["event_group"] = list(mapping["event_group"])
