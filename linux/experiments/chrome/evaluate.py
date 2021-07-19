@@ -4,6 +4,7 @@ import json
 from typing import Mapping
 import numpy as np
 import mmap
+import sys
 import pdb
 
 
@@ -11,6 +12,29 @@ FAULT_READAHEAD_WINDOW_PAGES=32
 BACK_RA_WINDOW = int(FAULT_READAHEAD_WINDOW_PAGES / 2)
 FRONT_RA_WINDOW = int(FAULT_READAHEAD_WINDOW_PAGES/ 2) - 1 
 ACCEPT_RA_CORNER_PAGE_CH_THRESHOLD=0.1
+EVENTS_TO_GERMAN_KEYBOARD = ["^", "1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "ß", "´", "BACK",
+    "TAB", "q", "w", "e", "r", "t", "z", "u", "i", "o", "p", "ü", "+", "RETURN", 
+    "CAPITAL", "a", "s", "d", "f", "g", "h", "j", "k", "l", "ö", "ä", "#",
+    "LSHIFT", "<", "z", "x", "c", "v", "b", "n", "m", ",", ".", "-", "RSHIFT",
+    "LCONTROL", "LMENU", "SPACE"]
+
+
+def classify(sample, file_to_events):
+    candidate_event_groups = []
+    for file in sample.keys():
+        for page in sample[file]:
+            if page not in file_to_events[file]:
+                continue 
+            event_mapping = file_to_events[file][page]
+            if event_mapping["evaluate_ra_corners"]:
+                if (event_mapping["ra_corner_pages_ch_ratios"][0][0] in sample[file] and 
+                    event_mapping["ra_corner_pages_ch_ratios"][1][0] in sample[file]):
+                    candidate_event_groups.append(event_mapping["event_group_filtered"])
+            else:
+                candidate_event_groups.append(event_mapping["event_group_filtered"])
+    # NOTE this might not work in every case (e.g. if triggering a larger event group readsahead a smaller one)
+    # just take event groups with smallest group size
+    return candidate_event_groups
 
 
 parser = argparse.ArgumentParser(description="Evaluates page cache hit data.")
@@ -77,3 +101,19 @@ for file in file_to_events.keys():
     for poffset in sorted(file_to_events[file].keys()):
         print("{:x} -> {}".format(poffset, file_to_events[file][poffset]["event_group_labels"]))
     print("")
+
+while True:
+    sample = {}
+    sample_times = []
+    # read new sample
+    while True:
+        line = sys.std.readline()
+        if line == "":
+            break
+        tokens = line.split(";")
+        sample_times.append(int(tokens[0]))
+        if tokens[1] not in sample:
+            sample[tokens[1]] = set()
+        sample[tokens[1]] = int(tokens[3], 16)
+    # classify
+    event_candidates = classify(sample, file_to_events)

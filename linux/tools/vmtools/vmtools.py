@@ -34,19 +34,30 @@ PAGE_IDLE_BITMAP_PATH = "/sys/kernel/mm/page_idle/bitmap"
 LIBC = CDLL("libc.so.6")
 
 
-def mlockFile(file):
+def mapFile(file, access):
     # map whole file
     with open(file, "rb") as file:
-        mm = mmap.mmap(file.fileno(), 0, access=mmap.ACCESS_READ)
+        mm = mmap.mmap(file.fileno(), 0, access=access)
     # get address + length
     mm_obj = py_object(mm)
     address = c_void_p()
     length = c_ssize_t()
     pythonapi.PyObject_AsReadBuffer(mm_obj, byref(address), byref(length))
-    # mlock whole file
-    if LIBC.mlock(address, length) != 0:
+   
+    return mm, address.value, length.value
+
+
+def mlock(address, length):
+    # mlock
+    if LIBC.mlock(c_void_p(address), c_ssize_t(length)) != 0:
         raise RuntimeError("mlock() failed: " + str(get_errno()))
-    return mm
+
+
+def mincore(address, length):
+    state = create_string_buffer(int((length + mmap.PAGESIZE - 1) / mmap.PAGESIZE))
+    if LIBC.mincore(c_void_p(address), c_size_t(length), state) != 0:
+        raise RuntimeError("mincore() failed: " + str(get_errno()))
+    return state.value
 
 
 class ProcessControl:

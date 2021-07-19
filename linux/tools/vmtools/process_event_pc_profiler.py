@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
+
+# Regarding Linux:
+# NOTE system should not be trashing memory (might to faulty detection)
 # NOTE locks examined memory-mapped files into memory
-# TODO if target process maps a lot of files this might fail!
+#   -> if target process maps a lot of files this might fail!
+# NOTE to speed up processing drop the page cache beforehand (echo 1 | sudo tee /proc/sys/vm/drop_caches)
+
 import argparse
 import vmtools
 import mmap
@@ -15,13 +20,14 @@ import signal
 import random
 import keyboard
 import functools
+import re
 import string
 import pdb
 
 
 # wait a bit after a event was triggered to allow all accesses to happen
 WAIT_AFTER_EVENT_S = 2
-# wait longer in case of idle event (we also want to catch less frequent periodic page accesses)
+# wait longer in case of idle event (we also want to catch less frequent periodic page accesses (noise))
 IDLE_EVENT_WAIT_S = 30
 FITNESS_THRESHOLD_TRAIN = 0.7
 CH_RATIOS_SIMILAR_THRESHOLD = 0.1
@@ -42,7 +48,9 @@ CH_RATIOS_EVENTS_SIMILAR_THRESHOLD = 0.5
 HANDLE_FAULT_RA="single-event"
 # linux 32 pages
 FAULT_RA_WINDOW_PAGES=32
-
+# blacklist files 
+# (sometimes make sense, for example blacklisting font files which might be different on different systems)
+FILE_BLACKLIST_REGEX = [r"/usr/share/fonts/.*"]
 
 
 def createPageCacheHitHeatmap(event_cache_hits, page_range, mapping_page_offset, title,
@@ -94,80 +102,70 @@ def createPageCacheHitHeatmap(event_cache_hits, page_range, mapping_page_offset,
     plt.close()
 
 
-def targetGetPcMappings(pid):
-    # freeze process (for parsing maps, getting pfns)
-    process_control = vmtools.ProcessControl(pid)
-    process_control.freeze()
+def targetGetPcMappings(pids):
+    maps = []
+    for pid in pids:
+        # freeze process (for parsing maps)
+        process_control = vmtools.ProcessControl(pid)
+        process_control.freeze()
+        # get read-only, file-backed mappings
+        #   -> read-only data, shared libraries
+        #   -> everything that for sure is shared using the page cache
+        maps_reader = vmtools.MapsReader(pid)
+        maps += maps_reader.getMapsByPermissions(
+            read=True, write=False, only_file=True)
+        process_control.resume()
 
-    # get read-only, file-backed mappings
-    #   -> read-only data, shared libraries
-    #   -> everything that for sure is shared using the page cache
-    maps_reader = vmtools.MapsReader(pid)
-    maps = maps_reader.getMapsByPermissions(
-        read=True, write=False, only_file=True)
-
-    # merge overlapping file mappings if existing (reduces senseless computations)
-    for m1 in range(len(maps) - 1):
-        if maps[m1] is None:
-            continue
-        for m2 in range(m1 + 1, len(maps)):
-            if (maps[m2] is not None and 
-                maps[m1]["path"] == maps[m2]["path"]):
-                # check if mappings overlap
-                # order mappings by file start position
-                if maps[m1]["file_offset"] <= maps[m2]["file_offset"]:
-                    first_mapping = m1
-                    second_mapping = m2
-                else:
-                    first_mapping = m2
-                    second_mapping = m1 
-                # check if overlapping
-                if(maps[second_mapping]["file_offset"] < 
-                    maps[first_mapping]["file_offset"] + maps[first_mapping]["size"]):
-                    delta = ((maps[second_mapping]["file_offset"] + maps[second_mapping]["size"]) - 
-                        (maps[first_mapping]["file_offset"] + maps[first_mapping]["size"]))
-                    print("Merge")
-                    pdb.set_trace()
-                    # overlapping, merge
-                    maps[first_mapping]["size"] += delta
-                    maps[first_mapping]["addresses"][1] += delta
-                    # mark second mapping for deletion
-                    maps[second_mapping] = None 
-            # might have been merged before
-            if maps[m1] is None:
-                break
-    # filter None values
-    maps = list(filter(None, maps))
-
-    # mlock files into memory (so that pfn stays the same)
-    # NOTE this might fail if too less physical memory is available
-    locked_files = set()
+    # NOTE many applications consists of multiple (forked) subprocesses and map 
+    # files multiple times, so its not always clear which process'es virtual address 
+    # space has the correct mappings 
+    # to circumvent this problems we only use the name of the mapped files of the target 
+    # processes as suggestion which files to check
+    # for these files it is then checked which pages are currently resident in RAM, 
+    # and they are then locked + tracked
+    processed_files = set()
+    processed_maps = []
+    # initialise page mapping reader
+    page_map_reader = vmtools.PageMapReader(os.getpid())
     for map in maps:
-        if map["path"] in locked_files:
+        if (map["path"] in processed_files or 
+            any([re.match(r, map["path"]) for r in FILE_BLACKLIST_REGEX])):
             continue 
+        # try to map file 
         try:
-            map["mm"] = vmtools.mlockFile(map["path"])
+            # map whole file
+            mm, address, length =  vmtools.mapFile(map["path"], mmap.ACCESS_READ)
+            mm.madvise(mmap.MADV_RANDOM)
         except FileNotFoundError:
             pass
-        locked_files = map["path"]
+        # get cache state + lock and track resident pages
+        pc_state = vmtools.mincore(address, length)
+        # no resident page -> skip
+        if all(state == 0 for state in pc_state):
+            continue
+        # lock + track resident pages
+        pfns = [-1] * len(pc_state)
+        for p, state in enumerate(pc_state):
+            if state == 1:
+                # lock
+                vmtools.mlock(address + p * mmap.PAGESIZE, mmap.PAGESIZE)
+                # get pfn
+                mapping = page_map_reader.getMapping(int(address / mmap.PAGESIZE) + p)
+                if mapping[0].present:
+                    pfns[p] = mapping[0].pfn_swap
+                else:
+                    raise RuntimeError("Locked page not present, this should not happen!")
 
-    # initialise page mapping reader
-    page_map_reader = vmtools.PageMapReader(pid)
-    # get pfns for maps
-    for map in maps:
-        vpn_low = int(map["addresses"][0] / mmap.PAGESIZE)
-        vpn_sup = int(
-            (map["addresses"][1] + mmap.PAGESIZE - 1) / mmap.PAGESIZE)
+        processed_maps.append({
+            "path": map["path"],
+            "file_offset": 0,
+            "size": length,
+            "pfns": pfns,
+            "mm": mm
+        })
+        processed_files = map["path"]
 
-        pfns = [-1] * (vpn_sup - vpn_low)
-        for i, vpn in enumerate(range(vpn_low, vpn_sup)):
-            mapping = page_map_reader.getMapping(vpn)
-            if mapping[0].present:
-                pfns[i] = mapping[0].pfn_swap
-        map["pfns"] = pfns
-
-    process_control.resume()
-    return maps
+    return processed_maps
 
 
 class Classifier:
@@ -182,7 +180,7 @@ class Classifier:
         self.samples_ = samples
         self.pc_mappings_ = pc_mappings
 
-    def collect(self, events, samples, pid):
+    def collect(self, events, samples, pids):
         self.events_ = events
         self.samples_ = samples
 
@@ -193,7 +191,7 @@ class Classifier:
         time.sleep(2)
 
         # get library mappings + pfns
-        pc_mappings = targetGetPcMappings(pid)
+        pc_mappings = targetGetPcMappings(pids)
         # prepare mapping objects for storing results
         self.collectPrepare_(pc_mappings)
 
@@ -534,11 +532,11 @@ def doKeyboardEvent(sc):
 
 def prepareKeyEvents():
     # main part of keyboard - except extended scancode keys
-    scan_codes = [0x29]#, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 
-        #0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c, 
-        #0x3a, 0x1e, 0x1f, 0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x2b, 
-        #0x2a, 0x56, 0x2c, 0x2d, 0x2e, 0x2f, 0x30, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 
-        #0x1d, 0x38, 0x39]
+    scan_codes = [0x29, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 
+        0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c, 
+        0x3a, 0x1e, 0x1f, 0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x2b, 
+        0x2a, 0x56, 0x2c, 0x2d, 0x2e, 0x2f, 0x30, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 
+        0x1d, 0x38, 0x39]
     events = [("sc_" + hex(x), functools.partial(doKeyboardEvent, x))
               for x in scan_codes]
     events.append(("fake", doFakeEvent))
@@ -552,10 +550,10 @@ def autoCampaignPrepareEvents():
 
 parser = argparse.ArgumentParser(
     description="Profiles which page offsets of shared files are accessed in case of an event.")
+parser.add_argument("--targets", type=int, nargs="+", metavar=("PID"), help="pids of the target processes")
 group_ex = parser.add_mutually_exclusive_group()
-group_ex.add_argument("--collect", type=int, nargs=2, metavar=("pid",
-                      "samples"), help="collect data: pid + samples needed")
-group_ex.add_argument("--load", type=str, metavar=("path"),
+group_ex.add_argument("--collect", type=int, metavar="SAMPLES", help="collect x samples")
+group_ex.add_argument("--load", type=str, metavar=("PATH"),
                       help="loads raw results from a json file and processes them again")
 parser.add_argument("--event_user", type=str, action="append", metavar=("NAME"),
                     help="use manually triggered events (else coded in events are used)")
@@ -566,7 +564,7 @@ parser.add_argument("--tracer", action="store_true",
 parser.add_argument("--save", type=str, help="saves results into json file")
 args = parser.parse_args()
 
-if not (args.collect or args.load) and not args.tracer:
+if not ((args.collect and args.targets) or args.load) and not args.tracer:
     parser.print_usage()
     exit(-1)
 
@@ -596,8 +594,8 @@ if args.load:
     # print results
     classifier.printResults()
 elif args.collect:
-    pid = args.collect[0]
-    samples = args.collect[1]
+    samples = args.collect
+    pids = args.targets
     # prepare events
     events = []
     if args.event_user:
@@ -612,7 +610,7 @@ elif args.collect:
     time.sleep(5)
 
     # collect page access data from process
-    classifier.collect(events, samples, pid)
+    classifier.collect(events, samples, pids)
     # process data
     # requires last event to be the "idle" event!
     results = classifier.train()
